@@ -1,0 +1,18 @@
+name = "picowi"
+description = "Standalone WiFi driver for the Pi Pico-W in Ada"
+version = "0.1.0-dev"
+
+authors = ["Max Reznik"]
+maintainers = ["Max Reznik <reznikmm@gmail.com>"]
+maintainers-logins = ["reznikmm"]
+licenses = "MIT"
+website = ""
+tags = []
+
+executables = ["picowi"]
+
+[build-switches]
+development.optimization = ["-O0"]
+
+[[depends-on]]
+pico_bsp = "^2.2.0"
