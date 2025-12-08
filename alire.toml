@@ -15,4 +15,9 @@ executables = ["picowi"]
 development.optimization = ["-O0"]
 
 [[depends-on]]
+rp2040_hal = "^2.5.0"
 pico_bsp = "^2.2.0"
+
+[[pins]]
+rp2040_hal = { url='https://github.com/JeremyGrosser/rp2040_hal' }
+

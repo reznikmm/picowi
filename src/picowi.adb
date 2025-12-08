@@ -7,16 +7,26 @@
 
 with Interfaces;
 
+with HAL;
+
 with RP.Device;
 with RP.Clock;
 with RP.GPIO;
+with RP.PIO;
+with RP.PIO.Current;
 with Pico;
+with PIO_SPI;
 
 procedure Picowi is
+   --  WL_CLK : RP.GPIO.GPIO_Point := (Pin => 0);
+   --  WL_D   : RP.GPIO.GPIO_Point := (Pin => 2);
    WL_CLK : RP.GPIO.GPIO_Point := (Pin => 29);
    WL_D   : RP.GPIO.GPIO_Point := (Pin => 24);
    WL_CS  : RP.GPIO.GPIO_Point := (Pin => 25);
    WL_ON  : RP.GPIO.GPIO_Point := (Pin => 23);
+
+   P  : RP.PIO.PIO_Device renames RP.Device.PIO_0;
+   SM : constant RP.PIO.PIO_SM := 0;
 
    subtype Byte is Interfaces.Unsigned_8;
    use type Byte;
@@ -30,9 +40,50 @@ procedure Picowi is
 
    type Byte_Array is array (Positive range <>) of Byte;
 
-   procedure Write_Bits (Data : Byte_Array; Bits : Positive) is
+   procedure PIO_Init;
+
+   procedure PIO_Init is
+
+      Config : RP.PIO.PIO_SM_Config := RP.PIO.Default_SM_Config;
+
+   begin
+      P.Enable;
+      P.Load (PIO_SPI.Picowi_Pio_Program_Instructions, 0);
+
+      --  Set I/O pins to be controlled
+      WL_CLK.Configure (RP.GPIO.Output, Func => P.GPIO_Function);
+      WL_D.Configure (RP.GPIO.Output, Func => P.GPIO_Function);
+
+      RP.PIO.Set_Wrap
+        (Config,
+         Wrap_Target => PIO_SPI.Picowi_Pio_Wrap_Target,
+         Wrap        => PIO_SPI.Picowi_Pio_Wrap);
+
+      RP.PIO.Set_Sideset (Config, 1, False, False);
+
+      --  Configure data pin as I/O, clock pin as O/P (sideset)
+      RP.PIO.Set_Out_Pins (Config, WL_D.Pin, 1);
+      RP.PIO.Set_In_Pins (Config, WL_D.Pin);
+      RP.PIO.Set_Sideset_Pins (Config, WL_CLK.Pin);
+
+      --  Get 8 bits from FIFOs, disable auto-pull & auto-push
+      RP.PIO.Set_Out_Shift (Config, False, False, 8);
+      RP.PIO.Set_In_Shift (Config, False, False, 8);
+
+      RP.PIO.Set_Clock_Frequency (Config, 1_000_000);
+      --  RP.PIO.Set_Clkdiv_Int_Frac (Config, 1, 0);
+
+      P.SM_Initialize (SM, 0, Config);
+      P.Clear_FIFOs (SM);
+      P.Set_Enabled (SM, True);
+      P.Set_Pin_Direction (SM, WL_CLK.Pin, RP.PIO.Output);
+      P.Set_Pin_Direction (SM, WL_D.Pin, RP.PIO.Input);
+   end PIO_Init;
+
+   procedure Write_Bits_0 (Data : Byte_Array; Bits : Positive) is
       Next : Byte := Data (Data'First);
    begin
+      --  P.Set_Enabled (SM, False);
       WL_CLK.Configure (RP.GPIO.Output);
       WL_CLK.Clear;
       WL_D.Configure (RP.GPIO.Output);
@@ -57,17 +108,59 @@ procedure Picowi is
       end loop;
 
       WL_D.Configure (RP.GPIO.Input);
+      --  WL_CLK.Configure (RP.GPIO.Output, Func => P.GPIO_Function);
+      --  WL_D.Configure (RP.GPIO.Output, Func => P.GPIO_Function);
+      --  P.Clear_FIFOs (SM);
+      --  P.Set_Enabled (SM, True);
+   end Write_Bits_0;
+
+   procedure Write_Bits (Data : Byte_Array; Bits : Positive) is
+      use type HAL.UInt5;
+      use type HAL.UInt32;
+   begin
+      P.Clear_FIFOs (SM);
+      P.Execute (SM, PIO_SPI.Offset_writer);
+      P.Set_Pin_Direction (SM, WL_D.Pin, RP.PIO.Output);
+
+      for J in 0 .. (Bits - 1) / 8 loop
+         P.Put (SM, 256 * 256 * 256 * Byte'Pos (Data (Data'First + J)));
+      end loop;
+
+      while not P.TX_FIFO_Empty (SM) loop
+         null;
+      end loop;
+
+      while RP.PIO.Current (P, SM) /= PIO_SPI.Offset_writer loop
+         null;
+      end loop;
+
+      P.Set_Pin_Direction (SM, WL_D.Pin, RP.PIO.Input);
+      P.Execute (SM, PIO_SPI.Offset_stall);
    end Write_Bits;
 
    procedure Read_Bits (Data : out Byte_Array; Bits : Positive) is
+   begin
+      P.Execute (SM, PIO_SPI.Offset_reader);
+      P.Put (SM, Natural'Pos (Bits / 8 - 1));
+      for J in 0 .. Bits / 8 - 1 loop
+         declare
+            Value : HAL.UInt32;
+         begin
+            P.Get (SM, Value);
+            Data (Data'First + J) := Byte (Value);
+         end;
+      end loop;
+   end Read_Bits;
+
+   procedure Read_Bits_0 (Data : out Byte_Array; Bits : Positive) is
       Set   : Boolean;
       Index : Positive := Data'First;
    begin
+      --  P.Set_Enabled (SM, False);
       WL_CLK.Configure (RP.GPIO.Output);
       WL_CLK.Clear;
 
       WL_D.Configure (RP.GPIO.Input);
-      WL_D.Clear;
 
       Data (Data'First) := 0;
 
@@ -86,7 +179,12 @@ procedure Picowi is
          WL_CLK.Clear;
          RP.Device.Timer.Delay_Microseconds (0);
       end loop;
-   end Read_Bits;
+
+      --  WL_CLK.Configure (RP.GPIO.Output, Func => P.GPIO_Function);
+      --  WL_D.Configure (RP.GPIO.Output, Func => P.GPIO_Function);
+      --  P.Clear_FIFOs (SM);
+      --  P.Set_Enabled (SM, True);
+   end Read_Bits_0;
 
    type BCM_Function is
      (SPI_Register,  --  All SPI specific registers
@@ -197,8 +295,6 @@ procedure Picowi is
       return Result;
    end Read_Register;
 
-   LED : RP.GPIO.GPIO_Point renames Pico.GP0;
-
 begin
    RP.Clock.Initialize (Pico.XOSC_Frequency);
    RP.Device.Timer.Enable;
@@ -223,7 +319,11 @@ begin
    WL_ON.Set;  --  Power ON
    RP.Device.Timer.Delay_Milliseconds (50);
 
-   WL_D.Configure (RP.GPIO.Input);
+   PIO_Init;
+
+   --  for J in 1 .. 1_000_000_000 loop
+   --     Write_Bits ((16#11#, 16#33#, 16#77#, 16#0F#), 32);
+   --  end loop;
 
    declare
       Ok : Boolean;
@@ -256,7 +356,6 @@ begin
    end;
 
    loop
-      LED.Toggle;
       RP.Device.Timer.Delay_Milliseconds (250);
    end loop;
 end Picowi;
