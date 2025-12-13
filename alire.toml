@@ -13,6 +13,7 @@ executables = ["picowi"]
 
 [build-switches]
 development.optimization = ["-O0"]
+development.style_checks = ["-gnaty", "-gnaty-B"]
 
 [[depends-on]]
 rp2040_hal = "^2.5.0"

@@ -70,8 +70,8 @@ procedure Picowi is
       RP.PIO.Set_Out_Shift (Config, False, False, 8);
       RP.PIO.Set_In_Shift (Config, False, False, 8);
 
-      RP.PIO.Set_Clock_Frequency (Config, 1_000_000);
-      --  RP.PIO.Set_Clkdiv_Int_Frac (Config, 1, 0);
+      --  RP.PIO.Set_Clock_Frequency (Config, 1_000_000);
+      RP.PIO.Set_Clkdiv_Int_Frac (Config, 1, 0);
 
       P.SM_Initialize (SM, 0, Config);
       P.Clear_FIFOs (SM);
