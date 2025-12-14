@@ -5,4 +5,7 @@
 
 package CYW4343X is
    pragma Pure;
+
+   type Bus_Function is (Bus, Backplane, WLAN);
+
 end CYW4343X;

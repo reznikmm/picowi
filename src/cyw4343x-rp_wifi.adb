@@ -22,6 +22,19 @@ package body CYW4343X.RP_WiFi is
 
    procedure PIO_Init;
 
+   -----------------
+   -- Chip_Select --
+   -----------------
+
+   procedure Chip_Select (On : Boolean) is
+   begin
+      if On then
+         WL_CS.Clear;
+      else
+         WL_CS.Set;
+      end if;
+   end Chip_Select;
+
    --------------------
    -- Configure_GPIO --
    --------------------
@@ -52,24 +65,6 @@ package body CYW4343X.RP_WiFi is
 
       PIO_Init;
    end Configure_GPIO;
-
-   --------------
-   -- CS_Clear --
-   --------------
-
-   procedure CS_Clear is
-   begin
-      WL_CS.Clear;
-   end CS_Clear;
-
-   ------------
-   -- CS_Set --
-   ------------
-
-   procedure CS_Set is
-   begin
-      WL_CS.Set;
-   end CS_Set;
 
    --------------
    -- PIO_Init --

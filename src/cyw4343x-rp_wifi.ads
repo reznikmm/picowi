@@ -15,7 +15,6 @@ package CYW4343X.RP_WiFi is
    procedure Write_SPI (Data : HAL.UInt8_Array);
    procedure Read_SPI (Data : out HAL.UInt8_Array);
 
-   procedure CS_Clear;
-   procedure CS_Set;
+   procedure Chip_Select (On : Boolean);
 
 end CYW4343X.RP_WiFi;
