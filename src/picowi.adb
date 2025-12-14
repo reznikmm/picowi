@@ -10,6 +10,7 @@ with RP.Clock;
 with Pico;
 
 with CYW4343X.RP_WiFi;
+with CYW4343X.Generic_IO;
 with CYW4343X.Generic_SPI;
 
 procedure Picowi is
@@ -19,41 +20,9 @@ procedure Picowi is
       Read  => CYW4343X.RP_WiFi.Read_SPI,
       Write => CYW4343X.RP_WiFi.Write_SPI);
 
-   --  procedure Write
-   --    (Data : Byte_Array;
-   --     Addr : Natural;
-   --     Func : BCM_Function;
-   --     Swap : Boolean := False)
-   --  is
-   --     use type Byte_Array;
-   --
-   --     Prefix : SPI_Message_Header :=
-   --       (Length  => Data'Length,
-   --        Address => Addr,
-   --        Func    => Func,
-   --        Incr    => True,
-   --        Write   => True);
-   --
-   --     Raw    : Byte_Array (1 .. 4)
-   --       with Import, Address => Prefix'Address;
-   --  begin
-   --     if Swap then
-   --        Swap_Byte (Raw (1), Raw (2));
-   --        Swap_Byte (Raw (3), Raw (4));
-   --     end if;
-   --
-   --     CYW4343X.RP_WiFi.Chip_Select (On => True);
-   --
-   --     CYW4343X.RP_WiFi.Write_SPI (Raw);
-   --
-   --     if Data'Length < 4 then
-   --        CYW4343X.RP_WiFi.Write_SPI ((1 .. 4 - Data'Length => 0) & Data);
-   --     else
-   --        CYW4343X.RP_WiFi.Write_SPI (Data);
-   --     end if;
-   --
-   --     CYW4343X.RP_WiFi.Chip_Select (On => False);
-   --  end Write;
+   package CYW4343X_IO is new CYW4343X.Generic_IO
+     (Read_Register => CYW4343X_SPI.Read_Register,
+      Write_Register => CYW4343X_SPI.Write_Register);
 
 begin
    RP.Clock.Initialize (Pico.XOSC_Frequency);
@@ -72,6 +41,12 @@ begin
 
       if Ok then
          CYW4343X_SPI.Switch_Endian (Ok);
+
+         if not Ok then
+            raise Program_Error;
+         end if;
+
+         CYW4343X_IO.Initialize (Ok);
 
          if not Ok then
             raise Program_Error;

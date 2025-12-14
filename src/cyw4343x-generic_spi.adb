@@ -81,6 +81,7 @@ package body CYW4343X.Generic_SPI is
    procedure Read_Register
      (Bus_Function : CYW4343X.Bus_Function;
       Address      : Interfaces.Unsigned_32;
+      Length       : Positive;
       Value        : out Interfaces.Unsigned_32)
    is
       procedure Read
@@ -96,8 +97,8 @@ package body CYW4343X.Generic_SPI is
          Gap  : Word;
 
          Prefix : constant SPI_Message_Header :=
-           (Length  => Data'Length +
-              (if Func = WLAN then Gap'Length else 0),
+           (Length  => Length +
+              (if Func = Backplane then Gap'Length else 0),
             Address => Addr,
             Func    => Func,
             Incr    => True,
@@ -108,7 +109,7 @@ package body CYW4343X.Generic_SPI is
          Chip_Select (On => True);
          Write (Raw);
 
-         if Func = WLAN then
+         if Func = Backplane then
             Read (Gap);
          end if;
 
@@ -182,8 +183,55 @@ package body CYW4343X.Generic_SPI is
       Value : Interfaces.Unsigned_32;
    begin
       Write_Bus_Control_Register_Swapped ((04, 16#b3#, 0, 2));
-      Read_Register (Bus, SPI_Register.Read_Test, Value);
+      Read_Register (Bus, SPI_Register.Read_Test, 4, Value);
       Success := Value = 16#FEED_BEAD#;
    end Switch_Endian;
+
+   --------------------
+   -- Write_Register --
+   --------------------
+
+   procedure Write_Register
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Length       : Positive;
+      Value        : Interfaces.Unsigned_32)
+   is
+      ----------
+      -- Read --
+      ----------
+
+      procedure Write
+        (Data : Word;
+         Addr : Natural;
+         Func : CYW4343X.Bus_Function);
+
+      procedure Write
+        (Data : Word;
+         Addr : Natural;
+         Func : CYW4343X.Bus_Function)
+      is
+         use type HAL.UInt8_Array;
+
+         Prefix : constant SPI_Message_Header :=
+           (Length  => Length,
+            Address => Addr,
+            Func    => Func,
+            Incr    => True,
+            Write   => True);
+
+         Raw    : constant HAL.UInt8_Array (1 .. 8) :=
+           To_Bytes (Prefix) & Data;
+      begin
+         Chip_Select (On => True);
+         Write (Raw);
+         Chip_Select (On => False);
+      end Write;
+
+      Raw    : Word
+        with Import, Address => Value'Address;
+   begin
+      Write (Raw, Natural (Address), Bus_Function);
+   end Write_Register;
 
 end CYW4343X.Generic_SPI;
