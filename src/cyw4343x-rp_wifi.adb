@@ -66,15 +66,6 @@ package body CYW4343X.RP_WiFi is
       PIO_Init;
    end Configure_GPIO;
 
-   ----------------
-   -- Initialize --
-   ----------------
-
-   procedure Initialize is
-   begin
-      null;
-   end Initialize;
-
    --------------
    -- PIO_Init --
    --------------

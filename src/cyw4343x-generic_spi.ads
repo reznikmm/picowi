@@ -29,4 +29,18 @@ package CYW4343X.Generic_SPI is
       Length       : Positive;
       Value        : Interfaces.Unsigned_32);
 
+   procedure Read
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Value        : out HAL.UInt8_Array);
+
+   procedure Write
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Value        : HAL.UInt8_Array);
+
+   function Has_Event return Boolean;
+
+   function Available_Packet_Length return Interfaces.Unsigned_32;
+
 end CYW4343X.Generic_SPI;

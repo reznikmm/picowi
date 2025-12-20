@@ -8,8 +8,9 @@ with Ada.Unchecked_Conversion;
 package body CYW4343X.Generic_SPI is
 
    package SPI_Register is
-      Bus_Control : constant := 0;
-      Read_Test : constant := 16#14#;
+      Bus_Control : constant := 16#00#;
+      Status      : constant := 16#08#;
+      Read_Test   : constant := 16#14#;
    end SPI_Register;
 
    type SPI_Message_Header is record
@@ -34,6 +35,31 @@ package body CYW4343X.Generic_SPI is
 
    function To_Bytes is new Ada.Unchecked_Conversion
      (SPI_Message_Header, Word);
+
+   -----------------------------
+   -- Available_Packet_Length --
+   -----------------------------
+
+   function Available_Packet_Length return Interfaces.Unsigned_32 is
+      use type Interfaces.Unsigned_32;
+
+      Value : Interfaces.Unsigned_32;
+
+      PKT_AVAIL : constant := 16#100#;
+      LEN_SHIFT : constant := 9;
+      LEN_MASK  : constant := 16#7FF#;
+
+   begin
+      Read_Register
+        (Bus_Function => CYW4343X.Bus,
+         Address      => SPI_Register.Status,
+         Length       => 4,
+         Value        => Value);
+
+      return
+        (if (Value and PKT_AVAIL) = 0 then 0
+         else Interfaces.Shift_Right (Value, LEN_SHIFT) and LEN_MASK);
+   end Available_Packet_Length;
 
    -----------------
    -- Detect_Chip --
@@ -73,6 +99,59 @@ package body CYW4343X.Generic_SPI is
       Value := Read_Register_14_Swapped;
       Success := Value = 16#EDFE_ADBE#;
    end Detect_Chip;
+
+   ---------------
+   -- Has_Event --
+   ---------------
+
+   function Has_Event return Boolean is
+      use type Interfaces.Unsigned_32;
+
+      F2_RX_READY : constant := 16#0020#;
+
+      Value : Interfaces.Unsigned_32;
+   begin
+      Read_Register
+        (Bus_Function => CYW4343X.Bus,
+         Address      => SPI_Register.Status,
+         Length       => 1,
+         Value        => Value);
+
+      return (Value and F2_RX_READY) /= 0;
+   end Has_Event;
+
+   ----------
+   -- Read --
+   ----------
+
+   procedure Read
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Value        : out HAL.UInt8_Array)
+   is
+      use type HAL.UInt8_Array;
+      use type Interfaces.Unsigned_32;
+
+      Prefix : constant SPI_Message_Header :=
+        (Length  => Value'Length + (if Bus_Function = Backplane then 4 else 0),
+         Address => Natural (Address and 16#1FFFF#),
+         Func    => Bus_Function,
+         Incr    => True,
+         Write   => False);
+
+      Gap    : HAL.UInt8_Array (1 .. 4);
+      Raw    : constant HAL.UInt8_Array (1 .. 4) := To_Bytes (Prefix);
+   begin
+      Chip_Select (On => True);
+      Write (Raw);
+
+      if Bus_Function = Backplane then
+         Read (Gap);
+      end if;
+
+      Read (Value);
+      Chip_Select (On => False);
+   end Read;
 
    -------------------
    -- Read_Register --
@@ -187,6 +266,40 @@ package body CYW4343X.Generic_SPI is
       Success := Value = 16#FEED_BEAD#;
    end Switch_Endian;
 
+   -----------
+   -- Write --
+   -----------
+
+   procedure Write
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Value        : HAL.UInt8_Array)
+   is
+      use type HAL.UInt8_Array;
+
+      Prefix : constant SPI_Message_Header :=
+        (Length  => Value'Length,
+         Address => Natural (Address),
+         Func    => Bus_Function,
+         Incr    => True,
+         Write   => True);
+
+      Raw    : HAL.UInt8_Array (1 .. 8) :=
+        To_Bytes (Prefix) & (0, 0, 0, 0);
+   begin
+      Chip_Select (On => True);
+
+      if Value'Length <= 4 then
+         Raw (5 .. 4 + Value'Length) := Value;
+         Write (Raw);
+      else
+         Write (Raw (1 .. 4));
+         Write (Value);
+      end if;
+
+      Chip_Select (On => False);
+   end Write;
+
    --------------------
    -- Write_Register --
    --------------------
@@ -197,9 +310,6 @@ package body CYW4343X.Generic_SPI is
       Length       : Positive;
       Value        : Interfaces.Unsigned_32)
    is
-      ----------
-      -- Read --
-      ----------
 
       procedure Write
         (Data : Word;

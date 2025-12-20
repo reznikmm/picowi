@@ -11,7 +11,6 @@ package CYW4343X.RP_WiFi is
 
    procedure Configure_GPIO (Power_On : Boolean);
    procedure Power_On;
-   procedure Initialize;
 
    procedure Write_SPI (Data : HAL.UInt8_Array);
    procedure Read_SPI (Data : out HAL.UInt8_Array);

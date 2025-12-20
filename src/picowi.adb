@@ -9,20 +9,25 @@ with RP.Device;
 with RP.Clock;
 with Pico;
 
-with CYW4343X.RP_WiFi;
+with CYW4343X.Firmware_43439;
 with CYW4343X.Generic_IO;
 with CYW4343X.Generic_SPI;
+with CYW4343X.RP_WiFi;
 
 procedure Picowi is
 
    package CYW4343X_SPI is new CYW4343X.Generic_SPI
      (Chip_Select => CYW4343X.RP_WiFi.Chip_Select,
-      Read  => CYW4343X.RP_WiFi.Read_SPI,
-      Write => CYW4343X.RP_WiFi.Write_SPI);
+      Read        => CYW4343X.RP_WiFi.Read_SPI,
+      Write       => CYW4343X.RP_WiFi.Write_SPI);
 
    package CYW4343X_IO is new CYW4343X.Generic_IO
-     (Read_Register => CYW4343X_SPI.Read_Register,
-      Write_Register => CYW4343X_SPI.Write_Register);
+     (Read_Register           => CYW4343X_SPI.Read_Register,
+      Write_Register          => CYW4343X_SPI.Write_Register,
+      Read                    => CYW4343X_SPI.Read,
+      Write                   => CYW4343X_SPI.Write,
+      Has_Event               => CYW4343X_SPI.Has_Event,
+      Available_Packet_Length => CYW4343X_SPI.Available_Packet_Length);
 
 begin
    RP.Clock.Initialize (Pico.XOSC_Frequency);
@@ -46,7 +51,11 @@ begin
             raise Program_Error;
          end if;
 
-         CYW4343X_IO.Initialize (Ok);
+         CYW4343X_IO.Initialize
+           (CYW4343X.Firmware_43439.Firmware_Image,
+            CYW4343X.Firmware_43439.NVRAM_Image,
+            CYW4343X.Firmware_43439.CLM_Data_Image,
+            Ok);
 
          if not Ok then
             raise Program_Error;
