@@ -15,13 +15,137 @@ package body CYW4343X.Generic_IO is
       Chip_Clock_CSR : constant := 16#1000e#;  --  Chip clock ctrl
    end Backplane_Register;
 
+   subtype Frame_Tag is Interfaces.Unsigned_32;
+
+   use type Interfaces.Unsigned_16;
+   use type Interfaces.Unsigned_32;
+
+   function Make_Tag (Length : Interfaces.Unsigned_16) return Frame_Tag is
+     (Interfaces.Shift_Left (Interfaces.Unsigned_32 (not Length), 16) +
+      Interfaces.Unsigned_32 (Length));
+
+   package Executor is
+
+      type Step_Kind is
+        (Write_Register,
+         Write_Register_Variable,
+         Read_Register,
+         Read_Register_Until,
+         Upload_Firmware,
+         Wait_Any_Event,
+         Sleep);
+
+      type Step (Kind : Step_Kind := Sleep) is record
+         case Kind is
+            when Read_Register
+               | Read_Register_Until
+               | Write_Register
+               | Write_Register_Variable
+            =>
+               Bus_Function : CYW4343X.Bus_Function;
+               Address      : Interfaces.Unsigned_32;
+               Length       : Positive;
+
+               case Kind is
+                  when Read_Register | Write_Register_Variable =>
+                     null;
+
+                  when Read_Register_Until =>
+                     Mask : Interfaces.Unsigned_32;
+                     Trys : Natural;
+
+                  when Write_Register =>
+                     Value : Interfaces.Unsigned_32;
+
+                  when Upload_Firmware | Wait_Any_Event | Sleep =>
+                     null;
+               end case;
+
+            when Upload_Firmware =>
+               Firmware : Positive;
+
+            when Wait_Any_Event =>
+               null;
+
+            when Sleep =>
+               Milliseconds : Natural;
+         end case;
+      end record;
+
+      type Step_Array is array (Positive range <>) of Step;
+
+      procedure Execute
+        (Steps        : Step_Array;
+         Success      : in out Boolean;
+         Firmware_1   : HAL.UInt8_Array;
+         Firmware_2   : HAL.UInt8_Array;
+         Custom_Value : Interfaces.Unsigned_32 := 0);
+
+      generic
+         Use_RAM : Boolean;
+      package Reset is
+         ARM_Core_Addr : constant Interfaces.Unsigned_32 := 16#1810_3000#;
+         RAM_Core_Addr : constant Interfaces.Unsigned_32 := 16#1810_4000#;
+         AI_IOCTRL_OSET : constant := 16#408#;
+         AI_RESETCTRL_OSET : constant := 16#800#;
+         Base : constant Interfaces.Unsigned_32 :=
+           (if Use_RAM then RAM_Core_Addr else ARM_Core_Addr) - 16#1810_0000#;
+
+         List : Step_Array :=
+           (1 =>
+              (Kind         => Write_Register,
+               Bus_Function => CYW4343X.Backplane,
+               Address      => Backplane_Register.Win_Addr,
+               Value        => 16#1810_0000# / 256,
+               Length       => 3),
+            2 =>
+              (Kind         => Read_Register,
+               Bus_Function => CYW4343X.Backplane,
+               Address      => Base + AI_IOCTRL_OSET,
+               Length       => 1),
+            3 =>
+              (Kind         => Write_Register,
+               Bus_Function => CYW4343X.Backplane,
+               Address      => Base + AI_IOCTRL_OSET,
+               Value        => 3,
+               Length       => 1),
+            4 =>
+              (Kind         => Read_Register,
+               Bus_Function => CYW4343X.Backplane,
+               Address      => Base + AI_IOCTRL_OSET,
+               Length       => 1),
+            5 =>
+              (Kind         => Write_Register,
+               Bus_Function => CYW4343X.Backplane,
+               Address      => Base + AI_RESETCTRL_OSET,
+               Value        => 0,
+               Length       => 1),
+            6 =>
+              (Kind     => Sleep,
+               Milliseconds => 1),
+            7 =>
+              (Kind         => Write_Register,
+               Bus_Function => CYW4343X.Backplane,
+               Address      => Base + AI_IOCTRL_OSET,
+               Value        => 1,
+               Length       => 1),
+            8 =>
+              (Kind         => Read_Register,
+               Bus_Function => CYW4343X.Backplane,
+               Address      => Base + AI_IOCTRL_OSET,
+               Length       => 1),
+            9 =>
+              (Kind     => Sleep,
+               Milliseconds => 1));
+      end Reset;
+
+   end Executor;
+
    procedure Upload_Firmware
      (Address : Interfaces.Unsigned_32;
       Data    : HAL.UInt8_Array);
 
    procedure CLM_Load (Data : HAL.UInt8_Array);
-
-   procedure Reset (Use_RAM : Boolean);
 
    procedure Get_Response
      (Data   : out HAL.UInt8_Array;
@@ -42,6 +166,97 @@ package body CYW4343X.Generic_IO is
 
    end IOCTL;
 
+   package body Executor is
+
+      procedure Execute
+        (Steps        : Step_Array;
+         Success      : in out Boolean;
+         Firmware_1   : HAL.UInt8_Array;
+         Firmware_2   : HAL.UInt8_Array;
+         Custom_Value : Interfaces.Unsigned_32 := 0)
+      is
+         Value : Interfaces.Unsigned_32;
+         Index : Positive := Steps'First;
+      begin
+         if not Success then
+            return;
+         end if;
+
+         while Index in Steps'Range loop
+            declare
+               Step : constant Executor.Step := Steps (Index);
+            begin
+               case Step.Kind is
+                  when Read_Register =>
+                     Read_Register
+                       (Bus_Function => Step.Bus_Function,
+                        Address      => Step.Address,
+                        Length       => Step.Length,
+                        Value        => Value);
+
+                  when Read_Register_Until =>
+                     for J in 1 .. Step.Trys loop
+                        Read_Register
+                          (Bus_Function => Step.Bus_Function,
+                           Address      => Step.Address,
+                           Length       => Step.Length,
+                           Value        => Value);
+
+                        exit when (Value and Step.Mask) /= 0;
+
+                        if J = Step.Trys then
+                           Success := False;
+                           return;
+                        end if;
+
+                        RP.Device.Timer.Delay_Milliseconds (1);
+                     end loop;
+
+                  when Write_Register =>
+                     Write_Register
+                       (Bus_Function => Step.Bus_Function,
+                        Address      => Step.Address,
+                        Length       => Step.Length,
+                        Value        => Step.Value);
+
+                  when Write_Register_Variable =>
+                     Write_Register
+                       (Bus_Function => Step.Bus_Function,
+                        Address      => Step.Address,
+                        Length       => Step.Length,
+                        Value        => Custom_Value);
+
+                  when Upload_Firmware =>
+                     Upload_Firmware
+                       (Address =>
+                         (if Step.Firmware = 1 then 0 else 16#7_FCFC#),
+                        Data    =>
+                         (if Step.Firmware = 1 then Firmware_1
+                          else Firmware_2));
+
+                  when Wait_Any_Event =>
+                     for J in 1 .. 100 loop
+                        exit when Has_Event;
+
+                        if J = 100 then
+                           Success := False;
+                           return;
+                        end if;
+
+                        RP.Device.Timer.Delay_Milliseconds (1);
+                     end loop;
+
+                  when Sleep =>
+                     RP.Device.Timer.Delay_Milliseconds (Step.Milliseconds);
+               end case;
+
+               Index := Index + 1;
+            end;
+         end loop;
+      end Execute;
+
+   end Executor;
+
    package body IOCTL is
 
       type BDC_Header is record
@@ -58,23 +273,8 @@ package body CYW4343X.Generic_IO is
          Offset   at 3 range 0 .. 7;
       end record;
 
-      type Frame_Tag is record
-         Length   : Interfaces.Unsigned_16;
-         Inverted : Interfaces.Unsigned_16;
-      end record;
-
-      for Frame_Tag use record
-         Length   at 0 range 0 .. 15;
-         Inverted at 2 range 0 .. 15;
-      end record;
-
-      use type Interfaces.Unsigned_16;
-
-      function Make_Tag (Length : Interfaces.Unsigned_16) return Frame_Tag is
-        (Length => Length, Inverted => not Length);
-
       function Is_Valid (Tag : Frame_Tag) return Boolean is
-        ((Tag.Length xor Tag.Inverted) = 16#FFFF#);
+        (((Interfaces.Shift_Right (Tag, 16) xor Tag) and 16#FFFF#) = 16#FFFF#);
 
       type SDPCM_Channel is new Interfaces.Unsigned_8;
 
@@ -262,7 +462,6 @@ package body CYW4343X.Generic_IO is
          Data    : out HAL.UInt8_Array)
       is
          use type Interfaces.Unsigned_8;
-         use type Interfaces.Unsigned_32;
 
          Out_Length : constant Interfaces.Unsigned_16 :=
            (Name'Length + Data'Length + 3) / 4 * 4;
@@ -329,7 +528,6 @@ package body CYW4343X.Generic_IO is
          Data    : HAL.UInt8_Array)
       is
          use type Interfaces.Unsigned_8;
-         use type Interfaces.Unsigned_32;
 
          Out_Length : constant Interfaces.Unsigned_16 :=
            (Name'Length + Data'Length + 3) / 4 * 4;
@@ -465,8 +663,6 @@ package body CYW4343X.Generic_IO is
      (Data   : out HAL.UInt8_Array;
       Last   : out Natural)
    is
-      use type Interfaces.Unsigned_32;
-
       Length : constant Interfaces.Unsigned_32 := Available_Packet_Length;
    begin
       if Length = 0 then
@@ -493,123 +689,107 @@ package body CYW4343X.Generic_IO is
       CLM      : HAL.UInt8_Array;
       Success  : out Boolean)
    is
-      use type Interfaces.Unsigned_32;
+      use type Executor.Step_Array;
 
-      Value : Interfaces.Unsigned_32;
+      package Reset_RAM is new Executor.Reset (Use_RAM => True);
+      package Reset_ARM is new Executor.Reset (Use_RAM => False);
+
+      List : constant Executor.Step_Array :=
+        Executor.Step_Array'
+        (1 =>
+           (Kind         => Executor.Read_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Chip_Clock_CSR,
+            Length       => 1),
+         --  Check Active Low Power (ALP) clock
+         2 =>
+           (Kind         => Executor.Write_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Chip_Clock_CSR,
+            Value        => 16#08#,
+            Length       => 1),
+         3 =>
+           (Kind         => Executor.Read_Register_Until,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Chip_Clock_CSR,
+            Mask         => 16#40#,
+            Length       => 1,
+            Trys         => 10),
+         4 =>
+           (Kind         => Executor.Write_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Chip_Clock_CSR,
+            Value        => 0,
+            Length       => 1))
+        &
+            Reset_RAM.List
+        &
+        Executor.Step_Array'
+        (14 =>
+          (Kind         => Executor.Read_Register,
+           Bus_Function => CYW4343X.Backplane,
+           Address      => Backplane_Register.Chip_Clock_CSR,
+           Length       => 1),
+         --  Write 0x18004010 and 0x18004044
+         15 =>
+          (Kind         => Executor.Write_Register,
+           Bus_Function => CYW4343X.Backplane,
+           Address      => Backplane_Register.Win_Addr,
+           Value        => 16#180000#,
+           Length       => 3),
+         16 =>
+          (Kind         => Executor.Write_Register,
+           Bus_Function => CYW4343X.Backplane,
+           Address      => 16#04010#,
+           Value        => 3,
+           Length       => 4),
+         17 =>
+          (Kind         => Executor.Write_Register,
+           Bus_Function => CYW4343X.Backplane,
+           Address      => 16#04044#,
+           Value        => 0,
+           Length       => 4),
+         18 =>
+          (Kind         => Executor.Upload_Firmware,
+           Firmware     => 1),
+         19 =>
+          (Kind         => Executor.Sleep,
+           Milliseconds => 5),
+         20 =>
+          (Kind         => Executor.Upload_Firmware,
+           Firmware     => 2),
+         21 =>
+           (Kind         => Executor.Write_Register_Variable,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => 16#FFFC#,  --  NVRAM size register
+            Length       => 4))
+        &
+        Reset_ARM.List
+        &
+        Executor.Step_Array'
+        (31 =>
+           (Kind         => Executor.Read_Register_Until,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Chip_Clock_CSR,
+            Mask         => 16#80#,
+            Length       => 1,
+            Trys         => 50),
+         32 =>
+           (Kind => Executor.Wait_Any_Event));
+
    begin
-      Read_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Backplane_Register.Chip_Clock_CSR,
-         Length       => 1,
-         Value        => Value);
-      pragma Assert (Value /= 0);
+      Success := True;
 
-      --  Check Active Low Power (ALP) clock
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Backplane_Register.Chip_Clock_CSR,
-         Value        => 16#08#,
-         Length       => 1);
+      Executor.Execute
+        (List,
+         Success,
+         Firmware_1   => Firmware,
+         Firmware_2   => NVRAM,
+         Custom_Value => Make_Tag (NVRAM'Length / 4));
 
-      for J in 1 .. 10 loop
-         Read_Register
-           (Bus_Function => CYW4343X.Backplane,
-            Address      => Backplane_Register.Chip_Clock_CSR,
-            Length       => 1,
-            Value        => Value);
-         exit when (Value and 16#40#) /= 0;
-
-         if J = 10 then
-            Success := False;
-            return;
-         else
-            RP.Device.Timer.Delay_Milliseconds (1);
-         end if;
-      end loop;
-
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Backplane_Register.Chip_Clock_CSR,
-         Value        => 0,
-         Length       => 1);
-
-      Reset (Use_RAM => True);
-
-      Read_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Backplane_Register.Chip_Clock_CSR,
-         Length       => 1,
-         Value        => Value);
-      pragma Assert (Value /= 0);
-
-      --  Write 0x18004010 and 0x18004044
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Backplane_Register.Win_Addr,
-         Value        => 16#180000#,
-         Length       => 3);
-
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => 16#04010#,
-         Value        => 3,
-         Length       => 4);
-
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => 16#04044#,
-         Value        => 0,
-         Length       => 4);
-
-      Upload_Firmware (Address => 0, Data => Firmware);
-
-      RP.Device.Timer.Delay_Milliseconds (5);
-
-      Upload_Firmware (Address => 16#7_FCFC#, Data => NVRAM);
-
-      declare
-         Value : Interfaces.Unsigned_32 := not (NVRAM'Length / 4);
-      begin
-         Value := Value * 2**16 + NVRAM'Length / 4;
-
-         Write_Register
-           (Bus_Function => CYW4343X.Backplane,
-            Address      => 16#FFFC#,
-            Value        => Value,
-            Length       => 4);
-      end;
-
-      Reset (Use_RAM => False);
-
-      for J in 1 .. 50 loop
-         Read_Register
-           (Bus_Function => CYW4343X.Backplane,
-            Address      => Backplane_Register.Chip_Clock_CSR,
-            Length       => 1,
-            Value        => Value);
-         exit when (Value and 16#80#) /= 0;
-
-         if J = 50 then
-            Success := False;
-            return;
-         else
-            RP.Device.Timer.Delay_Milliseconds (1);
-         end if;
-      end loop;
-
-      for J in 1 .. 100 loop
-
-         exit when Has_Event;
-
-         if J = 100 then
-            Success := False;
-            return;
-         else
-            RP.Device.Timer.Delay_Milliseconds (1);
-         end if;
-      end loop;
-
-      CLM_Load (CLM);
+      if Success then
+         CLM_Load (CLM);
+      end if;
 
       declare
          BAK_GPIOOUT_REG   : constant := 16#8064#;
@@ -646,69 +826,6 @@ package body CYW4343X.Generic_IO is
       Success := True;
    end Initialize;
 
-   -----------
-   -- Reset --
-   -----------
-
-   procedure Reset (Use_RAM : Boolean) is
-      use type Interfaces.Unsigned_32;
-
-      ARM_Core_Addr : constant Interfaces.Unsigned_32 := 16#1810_3000#;
-      RAM_Core_Addr : constant Interfaces.Unsigned_32 := 16#1810_4000#;
-      AI_IOCTRL_OSET : constant := 16#408#;
-      AI_RESETCTRL_OSET : constant := 16#800#;
-      Base : constant Interfaces.Unsigned_32 :=
-        (if Use_RAM then RAM_Core_Addr else ARM_Core_Addr) - 16#1810_0000#;
-
-      Ignore : Interfaces.Unsigned_32;
-   begin
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Backplane_Register.Win_Addr,
-         Value        => 16#1810_0000# / 256,
-         Length       => 3);
-
-      Read_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Base + AI_IOCTRL_OSET,
-         Length       => 1,
-         Value        => Ignore);
-
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Base + AI_IOCTRL_OSET,
-         Length       => 1,
-         Value        => 3);
-
-      Read_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Base + AI_IOCTRL_OSET,
-         Length       => 1,
-         Value        => Ignore);
-
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Base + AI_RESETCTRL_OSET,
-         Length       => 1,
-         Value        => 0);
-
-      RP.Device.Timer.Delay_Milliseconds (1);
-
-      Write_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Base + AI_IOCTRL_OSET,
-         Length       => 1,
-         Value        => 1);
-
-      Read_Register
-        (Bus_Function => CYW4343X.Backplane,
-         Address      => Base + AI_IOCTRL_OSET,
-         Length       => 1,
-         Value        => Ignore);
-
-      RP.Device.Timer.Delay_Milliseconds (1);
-   end Reset;
-
    ---------------------
    -- Upload_Firmware --
    ---------------------
@@ -717,8 +834,6 @@ package body CYW4343X.Generic_IO is
      (Address : Interfaces.Unsigned_32;
       Data    : HAL.UInt8_Array)
    is
-      use type Interfaces.Unsigned_32;
-
       Window_Size : constant := 16#8000#;
       Block_Size  : constant := 64;
       Offset      : Interfaces.Unsigned_32 := Address;
@@ -728,9 +843,6 @@ package body CYW4343X.Generic_IO is
    begin
       while From <= Data'Last loop
          Length := Natural'Min (Data'Last - From + 1, Block_Size);
-
-         --  Length := Natural'Min
-         --    (Length, Window_Size - Natural (Offset mod Window_Size));
 
          if Window /= Offset / Window_Size then
             Window := Offset / Window_Size;
