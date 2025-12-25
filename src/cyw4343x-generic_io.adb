@@ -35,6 +35,11 @@ package body CYW4343X.Generic_IO is
          Name    : HAL.UInt8_Array;
          Data    : HAL.UInt8_Array);
 
+      procedure Get
+        (Command : IOCTL.Command := 262;
+         Name    : HAL.UInt8_Array;
+         Data    : out HAL.UInt8_Array);
+
    end IOCTL;
 
    package body IOCTL is
@@ -138,6 +143,12 @@ package body CYW4343X.Generic_IO is
          Command : IOCTL.Command;
          Success : out Boolean);
 
+      procedure Decode_Input
+        (Last    : Positive;
+         Command : IOCTL.Command;
+         Data    : out HAL.UInt8_Array;
+         Success : out Boolean);
+
       Input       : HAL.UInt8_Array (1 .. 1500)
         with Alignment => 4;
 
@@ -185,6 +196,128 @@ package body CYW4343X.Generic_IO is
             end;
          end if;
       end Decode_Input;
+
+      ------------------
+      -- Decode_Input --
+      ------------------
+
+      procedure Decode_Input
+        (Last    : Positive;
+         Command : IOCTL.Command;
+         Data    : out HAL.UInt8_Array;
+         Success : out Boolean)
+      is
+         SDPCM : SDPCM_Header
+           with Import, Address => Input'Address;
+      begin
+         Success := False;
+
+         if Last < (SDPCM_Header'Size + IOCTL_Header'Size) / 8 then
+            return;
+         elsif Is_Valid (SDPCM.Tag)
+           and then SDPCM.Channel <= IOCTL.Data
+         then
+            declare
+               use System.Storage_Elements;
+
+               BDC : BDC_Header
+                 with Import,
+                 Address => Input'Address + Storage_Offset (SDPCM.Hdr_Len);
+
+               Skip : constant Positive := Positive (SDPCM.Hdr_Len);
+
+               Header : constant IOCTL_Header := To_IOCTL_Header
+                 (Input (Skip + 1 .. Skip + IOCTL_Header'Size / 8));
+
+               Header_Length : constant Positive :=
+                 Skip + IOCTL_Header'Size / 8;
+
+               In_Length     : constant Integer :=
+                 Last - Header_Length;
+            begin
+               if SDPCM.Channel = Control and then
+                 Command = Header.Command
+               then
+                  declare
+                     Size : constant Natural :=
+                       Natural'Min (In_Length, Data'Length);
+                  begin
+                     Data (1 .. Size) :=
+                       Input (Header_Length + 1 .. Header_Length + Size);
+
+                     Success := True;
+                  end;
+               end if;
+            end;
+         end if;
+      end Decode_Input;
+
+      ---------
+      -- Get --
+      ---------
+
+      procedure Get
+        (Command : IOCTL.Command := 262;
+         Name    : HAL.UInt8_Array;
+         Data    : out HAL.UInt8_Array)
+      is
+         use type Interfaces.Unsigned_8;
+         use type Interfaces.Unsigned_32;
+
+         Out_Length : constant Interfaces.Unsigned_16 :=
+           (Name'Length + Data'Length + 3) / 4 * 4;
+
+         Length     : constant Interfaces.Unsigned_16 :=
+           (SDPCM_Header'Size + IOCTL_Header'Size) / 8 + Out_Length;
+
+         Raw : HAL.UInt8_Array (1 .. Positive (Length))
+           with Import, Address => TX_Command'Address;
+
+      begin
+         TX_Sequence := TX_Sequence + 1;
+         TX_Request := Interfaces.Unsigned_16'Succ (TX_Request);
+
+         TX_Command :=
+           (SDPCM =>
+              (Tag      => Make_Tag (Length),
+               Sequence => TX_Sequence,
+               Channel  => Control,
+               Next_Len => 0,
+               Hdr_Len  => SDPCM_Header'Size / 8,
+               Flow     => 0,
+               Credit   => 0,
+               Reserved => 0),
+            IOCTL =>
+              (Command    => Command,
+               Out_Length => Out_Length,
+               In_Length  => 0,
+               Flags      => Interfaces.Unsigned_32 (TX_Request) * 2**16,
+               Status     => 0),
+            Data  => <>);
+
+         TX_Command.Data (1 .. Name'Length) := Name;
+
+         Write
+           (Bus_Function => CYW4343X.WLAN,
+            Address      => 0,
+            Value        => Raw);
+
+         for J in 1 .. 1000 loop
+            declare
+               Last : Natural;
+               Ok   : Boolean;
+            begin
+               Get_Response (Input, Last);
+
+               if Last = 0 then
+                  RP.Device.Timer.Delay_Milliseconds (1);
+               else
+                  Decode_Input (Last, Command, Data, Ok);
+                  exit when Ok;
+               end if;
+            end;
+         end loop;
+      end Get;
 
       ---------
       -- Set --
@@ -499,6 +632,15 @@ package body CYW4343X.Generic_IO is
             Address      => BAK_GPIOOUT_REG,
             Value        => 1,
             Length       => 4);
+      end;
+
+      declare
+         MAC  : HAL.UInt8_Array (1 .. 6);
+         Name : constant String := "cur_etheraddr" & Character'Val (0);
+         Raw  : HAL.UInt8_Array (Name'Range)
+           with Import, Address => Name'Address;
+      begin
+         IOCTL.Get (Name => Raw, Data => MAC);
       end;
 
       Success := True;
