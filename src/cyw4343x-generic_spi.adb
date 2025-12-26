@@ -36,6 +36,12 @@ package body CYW4343X.Generic_SPI is
    function To_Bytes is new Ada.Unchecked_Conversion
      (SPI_Message_Header, Word);
 
+   procedure Read
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Length       : Positive;
+      Value        : out HAL.UInt8_Array);
+
    -----------------------------
    -- Available_Packet_Length --
    -----------------------------
@@ -127,13 +133,14 @@ package body CYW4343X.Generic_SPI is
    procedure Read
      (Bus_Function : CYW4343X.Bus_Function;
       Address      : Interfaces.Unsigned_32;
+      Length       : Positive;
       Value        : out HAL.UInt8_Array)
    is
       use type HAL.UInt8_Array;
       use type Interfaces.Unsigned_32;
 
       Prefix : constant SPI_Message_Header :=
-        (Length  => Value'Length + (if Bus_Function = Backplane then 4 else 0),
+        (Length  => Length + (if Bus_Function = Backplane then 4 else 0),
          Address => Natural (Address and 16#1FFFF#),
          Func    => Bus_Function,
          Incr    => True,
@@ -153,6 +160,18 @@ package body CYW4343X.Generic_SPI is
       Chip_Select (On => False);
    end Read;
 
+   ----------
+   -- Read --
+   ----------
+
+   procedure Read
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Value        : out HAL.UInt8_Array) is
+   begin
+      Read (Bus_Function, Address, Value'Length, Value);
+   end Read;
+
    -------------------
    -- Read_Register --
    -------------------
@@ -163,45 +182,11 @@ package body CYW4343X.Generic_SPI is
       Length       : Positive;
       Value        : out Interfaces.Unsigned_32)
    is
-      procedure Read
-        (Data : out HAL.UInt8_Array;
-         Addr : Natural;
-         Func : CYW4343X.Bus_Function);
-
-      procedure Read
-        (Data : out HAL.UInt8_Array;
-         Addr : Natural;
-         Func : CYW4343X.Bus_Function)
-      is
-         Gap  : Word;
-
-         Prefix : constant SPI_Message_Header :=
-           (Length  => Length +
-              (if Func = Backplane then Gap'Length else 0),
-            Address => Addr,
-            Func    => Func,
-            Incr    => True,
-            Write   => False);
-
-         Raw    : constant Word := To_Bytes (Prefix);
-      begin
-         Chip_Select (On => True);
-         Write (Raw);
-
-         if Func = Backplane then
-            Read (Gap);
-         end if;
-
-         Read (Data);
-
-         Chip_Select (On => False);
-      end Read;
-
       Result : Interfaces.Unsigned_32 := 0;
       Raw    : Word
         with Import, Address => Result'Address;
    begin
-      Read (Raw, Natural (Address), Bus_Function);
+      Read (Bus_Function, Address, Length, Raw);
       Value := Result;
    end Read_Register;
 
@@ -310,38 +295,10 @@ package body CYW4343X.Generic_SPI is
       Length       : Positive;
       Value        : Interfaces.Unsigned_32)
    is
-
-      procedure Write
-        (Data : Word;
-         Addr : Natural;
-         Func : CYW4343X.Bus_Function);
-
-      procedure Write
-        (Data : Word;
-         Addr : Natural;
-         Func : CYW4343X.Bus_Function)
-      is
-         use type HAL.UInt8_Array;
-
-         Prefix : constant SPI_Message_Header :=
-           (Length  => Length,
-            Address => Addr,
-            Func    => Func,
-            Incr    => True,
-            Write   => True);
-
-         Raw    : constant HAL.UInt8_Array (1 .. 8) :=
-           To_Bytes (Prefix) & Data;
-      begin
-         Chip_Select (On => True);
-         Write (Raw);
-         Chip_Select (On => False);
-      end Write;
-
       Raw    : Word
         with Import, Address => Value'Address;
    begin
-      Write (Raw, Natural (Address), Bus_Function);
+      Write (Bus_Function, Address, Raw (1 .. Length));
    end Write_Register;
 
 end CYW4343X.Generic_SPI;
