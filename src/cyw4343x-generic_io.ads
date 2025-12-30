@@ -20,6 +20,13 @@ generic
       Length       : Positive;
       Value        : Interfaces.Unsigned_32);
 
+   Write_Prefix_Length : Natural;
+
+   with function Write_Prefix
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Length       : Positive) return HAL.UInt8_Array;
+
    with procedure Write
      (Bus_Function : CYW4343X.Bus_Function;
       Address      : Interfaces.Unsigned_32;

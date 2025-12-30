@@ -338,6 +338,12 @@ package body CYW4343X.Generic_IO is
          Data  at 28 range 0 .. 1536 * 8 - 1;
       end record;
 
+      type Output_IOCTL_Command is record
+         Prefix  : HAL.UInt8_Array (1 .. Write_Prefix_Length);
+         Command : IOCTL_Command;
+      end record
+        with Pack;
+
       procedure Decode_Input
         (Last    : Positive;
          Command : IOCTL.Command;
@@ -352,7 +358,7 @@ package body CYW4343X.Generic_IO is
       Input       : HAL.UInt8_Array (1 .. 1500)
         with Alignment => 4;
 
-      TX_Command  : IOCTL_Command;
+      TX_Command  : Output_IOCTL_Command;
       TX_Sequence : Interfaces.Unsigned_8 := 0;
       TX_Request  : Interfaces.Unsigned_16 := 0;
 
@@ -467,7 +473,9 @@ package body CYW4343X.Generic_IO is
            (Name'Length + Data'Length + 3) / 4 * 4;
 
          Length     : constant Interfaces.Unsigned_16 :=
-           (SDPCM_Header'Size + IOCTL_Header'Size) / 8 + Out_Length;
+           Interfaces.Unsigned_16 (Write_Prefix_Length) +
+           (SDPCM_Header'Size + IOCTL_Header'Size) / 8 +
+           Out_Length;
 
          Raw : HAL.UInt8_Array (1 .. Positive (Length))
            with Import, Address => TX_Command'Address;
@@ -477,24 +485,29 @@ package body CYW4343X.Generic_IO is
          TX_Request := Interfaces.Unsigned_16'Succ (TX_Request);
 
          TX_Command :=
-           (SDPCM =>
-              (Tag      => Make_Tag (Length),
-               Sequence => TX_Sequence,
-               Channel  => Control,
-               Next_Len => 0,
-               Hdr_Len  => SDPCM_Header'Size / 8,
-               Flow     => 0,
-               Credit   => 0,
-               Reserved => 0),
-            IOCTL =>
-              (Command    => Command,
-               Out_Length => Out_Length,
-               In_Length  => 0,
-               Flags      => Interfaces.Unsigned_32 (TX_Request) * 2**16,
-               Status     => 0),
-            Data  => <>);
+           (Prefix => Write_Prefix
+              (Bus_Function => CYW4343X.WLAN,
+               Address      => 0,
+               Length       => Positive (Length) - Write_Prefix_Length),
+            Command =>
+              (SDPCM =>
+                   (Tag      => Make_Tag (Length),
+                    Sequence => TX_Sequence,
+                    Channel  => Control,
+                    Next_Len => 0,
+                    Hdr_Len  => SDPCM_Header'Size / 8,
+                    Flow     => 0,
+                    Credit   => 0,
+                    Reserved => 0),
+               IOCTL =>
+                 (Command    => Command,
+                  Out_Length => Out_Length,
+                  In_Length  => 0,
+                  Flags      => Interfaces.Unsigned_32 (TX_Request) * 2**16,
+                  Status     => 0),
+               Data  => <>));
 
-         TX_Command.Data (1 .. Name'Length) := Name;
+         TX_Command.Command.Data (1 .. Name'Length) := Name;
 
          Write
            (Bus_Function => CYW4343X.WLAN,
@@ -533,7 +546,9 @@ package body CYW4343X.Generic_IO is
            (Name'Length + Data'Length + 3) / 4 * 4;
 
          Length     : constant Interfaces.Unsigned_16 :=
-           (SDPCM_Header'Size + IOCTL_Header'Size) / 8 + Out_Length;
+           Interfaces.Unsigned_16 (Write_Prefix_Length) +
+           (SDPCM_Header'Size + IOCTL_Header'Size) / 8 +
+           Out_Length;
 
          Raw : HAL.UInt8_Array (1 .. Positive (Length))
            with Import, Address => TX_Command'Address;
@@ -543,29 +558,35 @@ package body CYW4343X.Generic_IO is
          TX_Request := Interfaces.Unsigned_16'Succ (TX_Request);
 
          TX_Command :=
-           (SDPCM =>
-              (Tag      => Make_Tag (Length),
-               Sequence => TX_Sequence,
-               Channel  => Control,
-               Next_Len => 0,
-               Hdr_Len  => SDPCM_Header'Size / 8,
-               Flow     => 0,
-               Credit   => 0,
-               Reserved => 0),
-            IOCTL =>
-              (Command    => Command,
-               Out_Length => Out_Length,
-               In_Length  => 0,
-               Flags      => Interfaces.Unsigned_32 (TX_Request) * 2**16 + 2,
-               Status     => 0),
-            Data  => <>);
+           (Prefix => Write_Prefix
+              (Bus_Function => CYW4343X.WLAN,
+               Address      => 0,
+               Length       => Positive (Length) - Write_Prefix_Length),
+            Command =>
+              (SDPCM =>
+                   (Tag      => Make_Tag (Length),
+                    Sequence => TX_Sequence,
+                    Channel  => Control,
+                    Next_Len => 0,
+                    Hdr_Len  => SDPCM_Header'Size / 8,
+                    Flow     => 0,
+                    Credit   => 0,
+                    Reserved => 0),
+               IOCTL =>
+                 (Command    => Command,
+                  Out_Length => Out_Length,
+                  In_Length  => 0,
+                  Flags      =>
+                    Interfaces.Unsigned_32 (TX_Request) * 2**16 + 2,
+                  Status     => 0),
+               Data  => <>));
 
-         TX_Command.Data (1 .. Name'Length) := Name;
+         TX_Command.Command.Data (1 .. Name'Length) := Name;
 
-         TX_Command.Data (Name'Length + 1 .. Name'Length + Data'Length) :=
-           Data;
+         TX_Command.Command.Data (Name'Length + 1 .. Name'Length + Data'Length)
+           := Data;
 
-         TX_Command.Data
+         TX_Command.Command.Data
            (Name'Length + Data'Length + 1 .. Natural (Out_Length)) :=
              (others => 0);
 
@@ -840,6 +861,7 @@ package body CYW4343X.Generic_IO is
       From        : Natural := Data'First;
       Length      : Natural;
       Window      : Interfaces.Unsigned_32 := Interfaces.Unsigned_32'Last;
+      Piece       : HAL.UInt8_Array (1 .. Write_Prefix_Length + Block_Size);
    begin
       while From <= Data'Last loop
          Length := Natural'Min (Data'Last - From + 1, Block_Size);
@@ -854,10 +876,18 @@ package body CYW4343X.Generic_IO is
                Length       => 3);
          end if;
 
+         Piece (1 .. Write_Prefix_Length) := Write_Prefix
+           (Bus_Function => CYW4343X.Backplane,
+            Address      => Offset mod Window_Size,
+            Length       => Length);
+
+         Piece (Write_Prefix_Length + 1 .. Write_Prefix_Length + Length) :=
+           Data (From .. From + Length - 1);
+
          Write
            (Bus_Function => CYW4343X.Backplane,
             Address      => Offset mod Window_Size,
-            Value        => Data (From .. From + Length - 1));
+            Value        => Piece (1 .. Write_Prefix_Length + Length));
 
          From := From + Length;
          Offset := Offset + Interfaces.Unsigned_32 (Length);

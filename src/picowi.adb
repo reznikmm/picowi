@@ -25,6 +25,8 @@ procedure Picowi is
      (Read_Register           => CYW4343X_SPI.Read_Register,
       Write_Register          => CYW4343X_SPI.Write_Register,
       Read                    => CYW4343X_SPI.Read,
+      Write_Prefix_Length     => CYW4343X_SPI.Output_Prefix'Length,
+      Write_Prefix            => CYW4343X_SPI.Write_Prefix,
       Write                   => CYW4343X_SPI.Write,
       Has_Event               => CYW4343X_SPI.Has_Event,
       Available_Packet_Length => CYW4343X_SPI.Available_Packet_Length);

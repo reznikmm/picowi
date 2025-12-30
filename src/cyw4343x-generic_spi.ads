@@ -34,10 +34,19 @@ package CYW4343X.Generic_SPI is
       Address      : Interfaces.Unsigned_32;
       Value        : out HAL.UInt8_Array);
 
+   subtype Output_Prefix is HAL.UInt8_Array (1 .. 4);
+
+   function Write_Prefix
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Length       : Positive) return Output_Prefix;
+
    procedure Write
      (Bus_Function : CYW4343X.Bus_Function;
       Address      : Interfaces.Unsigned_32;
       Value        : HAL.UInt8_Array);
+   --  Write Value to bus/address. Value should have Write_Prefix
+   --  at the begiinning.
 
    function Has_Event return Boolean;
 

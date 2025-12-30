@@ -136,7 +136,6 @@ package body CYW4343X.Generic_SPI is
       Length       : Positive;
       Value        : out HAL.UInt8_Array)
    is
-      use type HAL.UInt8_Array;
       use type Interfaces.Unsigned_32;
 
       Prefix : constant SPI_Message_Header :=
@@ -222,12 +221,12 @@ package body CYW4343X.Generic_SPI is
    -------------------
 
    procedure Switch_Endian (Success : out Boolean) is
+      use type HAL.UInt8_Array;
       use type Interfaces.Unsigned_32;
 
       procedure Write_Bus_Control_Register_Swapped (Bytes : Word);
 
       procedure Write_Bus_Control_Register_Swapped (Bytes : Word) is
-         use type HAL.UInt8_Array;
 
          Prefix : constant SPI_Message_Header := Swap
            ((Length  => 4,
@@ -260,30 +259,29 @@ package body CYW4343X.Generic_SPI is
       Address      : Interfaces.Unsigned_32;
       Value        : HAL.UInt8_Array)
    is
-      use type HAL.UInt8_Array;
-
-      Prefix : constant SPI_Message_Header :=
-        (Length  => Value'Length,
-         Address => Natural (Address),
-         Func    => Bus_Function,
-         Incr    => True,
-         Write   => True);
-
-      Raw    : HAL.UInt8_Array (1 .. 8) :=
-        To_Bytes (Prefix) & (0, 0, 0, 0);
+      pragma Unreferenced (Bus_Function);
+      pragma Unreferenced (Address);
    begin
       Chip_Select (On => True);
-
-      if Value'Length <= 4 then
-         Raw (5 .. 4 + Value'Length) := Value;
-         Write (Raw);
-      else
-         Write (Raw (1 .. 4));
-         Write (Value);
-      end if;
-
+      Write (Value);
       Chip_Select (On => False);
    end Write;
+
+   ------------------
+   -- Write_Prefix --
+   ------------------
+
+   function Write_Prefix
+     (Bus_Function : CYW4343X.Bus_Function;
+      Address      : Interfaces.Unsigned_32;
+      Length       : Positive) return Output_Prefix is
+     (Output_Prefix
+       (To_Bytes
+         ((Length  => Length,
+           Address => Natural (Address),
+           Func    => Bus_Function,
+           Incr    => True,
+           Write   => True))));
 
    --------------------
    -- Write_Register --
@@ -295,10 +293,15 @@ package body CYW4343X.Generic_SPI is
       Length       : Positive;
       Value        : Interfaces.Unsigned_32)
    is
-      Raw    : Word
-        with Import, Address => Value'Address;
+      use type HAL.UInt8_Array;
+
+      function To_Bytes is new Ada.Unchecked_Conversion
+        (Interfaces.Unsigned_32, Word);
+
+      Output : constant HAL.UInt8_Array :=
+        (Write_Prefix (Bus_Function, Address, Length) & To_Bytes (Value));
    begin
-      Write (Bus_Function, Address, Raw (1 .. Length));
+      Write (Bus_Function, Address, Output);
    end Write_Register;
 
 end CYW4343X.Generic_SPI;
