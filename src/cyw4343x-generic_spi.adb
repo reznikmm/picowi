@@ -139,22 +139,16 @@ package body CYW4343X.Generic_SPI is
       use type Interfaces.Unsigned_32;
 
       Prefix : constant SPI_Message_Header :=
-        (Length  => Length + (if Bus_Function = Backplane then 4 else 0),
+        (Length  => Length,
          Address => Natural (Address and 16#1FFFF#),
          Func    => Bus_Function,
          Incr    => True,
          Write   => False);
 
-      Gap    : HAL.UInt8_Array (1 .. 4);
-      Raw    : constant HAL.UInt8_Array (1 .. 4) := To_Bytes (Prefix);
+      Raw : constant HAL.UInt8_Array (1 .. 4) := To_Bytes (Prefix);
    begin
       Chip_Select (On => True);
       Write (Raw);
-
-      if Bus_Function = Backplane then
-         Read (Gap);
-      end if;
-
       Read (Value);
       Chip_Select (On => False);
    end Read;
@@ -181,12 +175,18 @@ package body CYW4343X.Generic_SPI is
       Length       : Positive;
       Value        : out Interfaces.Unsigned_32)
    is
-      Result : Interfaces.Unsigned_32 := 0;
-      Raw    : Word
-        with Import, Address => Result'Address;
+      function From_Bytes is new Ada.Unchecked_Conversion
+        (Word, Interfaces.Unsigned_32);
+
+      Data   : HAL.UInt8_Array (1 .. 8);  --  Gap and value
    begin
-      Read (Bus_Function, Address, Length, Raw);
-      Value := Result;
+      if Bus_Function = Backplane then
+         Read (Bus_Function, Address, Length, Data);
+         Value := From_Bytes (Word (Data (5 .. 8)));
+      else
+         Read (Bus_Function, Address, Length, Data (1 .. 4));
+         Value := From_Bytes (Data (1 .. 4));
+      end if;
    end Read_Register;
 
    ----------

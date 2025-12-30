@@ -32,7 +32,8 @@ package CYW4343X.Generic_SPI is
    procedure Read
      (Bus_Function : CYW4343X.Bus_Function;
       Address      : Interfaces.Unsigned_32;
-      Value        : out HAL.UInt8_Array);
+      Value        : out HAL.UInt8_Array)
+     with Pre => Bus_Function /= Backplane;
 
    subtype Output_Prefix is HAL.UInt8_Array (1 .. 4);
 
