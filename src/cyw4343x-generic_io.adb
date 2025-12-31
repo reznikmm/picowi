@@ -10,9 +10,16 @@ with RP.Device;
 
 package body CYW4343X.Generic_IO is
 
+   type Input_Buffer is new HAL.UInt8_Array
+     with Alignment => 4;
+
+   Input : Input_Buffer (1 .. 1536);
+
    package Backplane_Register is
       Win_Addr : constant := 16#1000a#;  --  Window addr
       Chip_Clock_CSR : constant := 16#1000e#;  --  Chip clock ctrl
+      Pull_Up        : constant := 16#1000f#;
+      Sleep_CSR      : constant := 16#1001f#;
    end Backplane_Register;
 
    subtype Frame_Tag is Interfaces.Unsigned_32;
@@ -33,6 +40,7 @@ package body CYW4343X.Generic_IO is
          Read_Register_Until,
          Upload_Firmware,
          Wait_Any_Event,
+         Clear_Error,
          Sleep);
 
       type Step (Kind : Step_Kind := Sleep) is record
@@ -57,14 +65,18 @@ package body CYW4343X.Generic_IO is
                   when Write_Register =>
                      Value : Interfaces.Unsigned_32;
 
-                  when Upload_Firmware | Wait_Any_Event | Sleep =>
+                  when Upload_Firmware
+                     | Wait_Any_Event
+                     | Clear_Error
+                     | Sleep
+                   =>
                      null;
                end case;
 
             when Upload_Firmware =>
                Firmware : Positive;
 
-            when Wait_Any_Event =>
+            when Wait_Any_Event | Clear_Error =>
                null;
 
             when Sleep =>
@@ -91,7 +103,7 @@ package body CYW4343X.Generic_IO is
          Base : constant Interfaces.Unsigned_32 :=
            (if Use_RAM then RAM_Core_Addr else ARM_Core_Addr) - 16#1810_0000#;
 
-         List : Step_Array :=
+         List : constant Step_Array :=
            (1 =>
               (Kind         => Write_Register,
                Bus_Function => CYW4343X.Backplane,
@@ -139,6 +151,44 @@ package body CYW4343X.Generic_IO is
                Milliseconds => 1));
       end Reset;
 
+      Join_Start : constant Step_Array :=
+        (1 =>
+           (Kind         => Write_Register,  --  Clear pullups
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Pull_Up,
+            Value        => 16#0F#,
+            Length       => 1),
+         2 =>
+           (Kind         => Write_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Pull_Up,
+            Value        => 0,
+            Length       => 1),
+         3 =>
+           (Kind         => Read_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Pull_Up,
+            Length       => 1),
+         4 => (Kind => Clear_Error),
+      --  Set sleep KSO (should poll to check for success)
+         5 =>
+           (Kind         => Write_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Sleep_CSR,
+            Value        => 1,
+            Length       => 1),
+         6 =>
+           (Kind         => Write_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Sleep_CSR,
+            Value        => 1,
+            Length       => 1),
+         7 =>
+           (Kind         => Read_Register,
+            Bus_Function => CYW4343X.Backplane,
+            Address      => Backplane_Register.Sleep_CSR,
+            Length       => 1));
+
    end Executor;
 
    procedure Upload_Firmware
@@ -148,21 +198,132 @@ package body CYW4343X.Generic_IO is
    procedure CLM_Load (Data : HAL.UInt8_Array);
 
    procedure Get_Response
-     (Data   : out HAL.UInt8_Array;
+     (Data   : out Input_Buffer;
       Last   : out Natural);
+
+   package Events is
+
+      type Event is new Interfaces.Unsigned_8;
+
+      function JOIN return Event is (1);
+      --  1, /** differentiates join IBSS from found (WLC_E_START) IBSS */
+      function ASSOC return Event is (7);
+      --  7, /** 802.11 ASSOC request */
+      function REASSOC return Event is (9);
+      --  9, /** 802.11 REASSOC request */
+      function ASSOC_REQ_IE return Event is (87);
+      function ASSOC_RESP_IE return Event is (88);
+      function SET_SSID return Event is (0);
+      --  0  /** indicates status of set SSID */,
+      function LINK return Event is (16);
+      --  16, /** generic link indication */
+      function AUTH return Event is (3);
+      --  3, /** 802.11 AUTH request */
+      function PSK_SUP return Event is (46);
+      --  46, /** WPA Handshake */
+      function EAPOL_MSG return Event is (25);
+      --  25, /** Event encapsulating an EAPOL message */
+      function DISASSOC_IND return Event is (12);
+      --  12, /** 802.11 DISASSOC indication */
+
+      function Last_Event return Event is (208);
+
+      type Event_Mask is array (Event range 0 .. Last_Event) of Boolean
+        with Pack, Alignment => 1;
+
+      type Event_Array is array (Positive range <>) of Event;
+
+      Join_Events : constant Event_Array :=
+        (JOIN,
+         ASSOC,
+         REASSOC,
+         ASSOC_REQ_IE,
+         ASSOC_RESP_IE,
+         SET_SSID,
+         LINK,
+         AUTH,
+         PSK_SUP,
+         EAPOL_MSG,
+         DISASSOC_IND);
+
+      function To_Mask (List : Event_Array) return Event_Mask;
+
+      subtype Raw_Event_Mask is HAL.UInt8_Array (1 .. Event_Mask'Size / 8 + 4);
+
+      function To_Raw_Event_Mask (Mask : Event_Mask) return Raw_Event_Mask;
+
+   end Events;
+
+   package body Events is
+
+      -------------
+      -- To_Mask --
+      -------------
+
+      function To_Mask (List : Event_Array) return Event_Mask is
+         Mask : Event_Mask := (others => False);
+      begin
+         for Event of List loop
+            Mask (Event) := True;
+         end loop;
+
+         return Mask;
+      end To_Mask;
+
+      -----------------------
+      -- To_Raw_Event_Mask --
+      -----------------------
+
+      function To_Raw_Event_Mask (Mask : Event_Mask) return Raw_Event_Mask is
+         Raw : Raw_Event_Mask := (others => 0);
+
+         Copy : Event_Mask
+           with Import, Address => Raw (5)'Address;
+      begin
+         Copy := Mask;
+
+         return Raw;
+      end To_Raw_Event_Mask;
+
+   end Events;
 
    package IOCTL is
       type Command is new Interfaces.Unsigned_32;
+
+      WLC_SET_VAR : constant Command := 263;
+      WLC_SET_ANTDIV : constant Command := 64;
 
       procedure Set
         (Command : IOCTL.Command;
          Name    : HAL.UInt8_Array;
          Data    : HAL.UInt8_Array);
 
+      procedure Set
+        (Command : IOCTL.Command;
+         Name    : String;
+         Data    : HAL.UInt8_Array);
+      --  TBD: Timeout parameter, success result
+
+      procedure Set
+        (Command : IOCTL.Command;
+         Name    : String;
+         Data    : Interfaces.Unsigned_32);
+
       procedure Get
         (Command : IOCTL.Command := 262;
          Name    : HAL.UInt8_Array;
          Data    : out HAL.UInt8_Array);
+
+      procedure Event_Poll
+        (Input   : in out Input_Buffer;
+         Command : out IOCTL.Command;
+         From    : out Positive;
+         To      : out Natural);
+
+      procedure Decode_Input
+        (Input   : Input_Buffer;
+         Command : out IOCTL.Command;
+         From    : out Positive);
 
    end IOCTL;
 
@@ -246,6 +407,9 @@ package body CYW4343X.Generic_IO is
                         RP.Device.Timer.Delay_Milliseconds (1);
                      end loop;
 
+                  when Clear_Error =>
+                     Clear_Error;
+
                   when Sleep =>
                      RP.Device.Timer.Delay_Milliseconds (Step.Milliseconds);
                end case;
@@ -321,7 +485,7 @@ package body CYW4343X.Generic_IO is
          Status     at 12 range 0 .. 31;
       end record;
 
-      subtype IOCTL_Header_Raw is HAL.UInt8_Array (1 .. IOCTL_Header'Size / 8);
+      subtype IOCTL_Header_Raw is Input_Buffer (1 .. IOCTL_Header'Size / 8);
 
       function To_IOCTL_Header is new Ada.Unchecked_Conversion
         (IOCTL_Header_Raw, IOCTL_Header);
@@ -344,81 +508,26 @@ package body CYW4343X.Generic_IO is
       end record
         with Pack;
 
-      procedure Decode_Input
-        (Last    : Positive;
-         Command : IOCTL.Command;
-         Success : out Boolean);
-
-      procedure Decode_Input
-        (Last    : Positive;
-         Command : IOCTL.Command;
-         Data    : out HAL.UInt8_Array;
-         Success : out Boolean);
-
-      Input       : HAL.UInt8_Array (1 .. 1500)
-        with Alignment => 4;
-
       TX_Command  : Output_IOCTL_Command;
       TX_Sequence : Interfaces.Unsigned_8 := 0;
       TX_Request  : Interfaces.Unsigned_16 := 0;
-
-      ------------
-      -- Decode --
-      ------------
-
-      procedure Decode_Input
-        (Last    : Positive;
-         Command : IOCTL.Command;
-         Success : out Boolean)
-      is
-         SDPCM : SDPCM_Header
-           with Import, Address => Input'Address;
-      begin
-         Success := False;
-
-         if Last < (SDPCM_Header'Size + IOCTL_Header'Size) / 8 then
-            return;
-         elsif Is_Valid (SDPCM.Tag)
-           and then SDPCM.Channel <= IOCTL.Data
-         then
-            declare
-               use System.Storage_Elements;
-
-               BDC : BDC_Header
-                 with Import,
-                 Address => Input'Address + Storage_Offset (SDPCM.Hdr_Len);
-
-               Hdr_Len : constant Positive := Positive (SDPCM.Hdr_Len);
-
-               Header : constant IOCTL_Header := To_IOCTL_Header
-                 (Input (Hdr_Len + 1 .. Hdr_Len + IOCTL_Header'Size / 8));
-
-            begin
-               if SDPCM.Channel = Control and then
-                 Command = Header.Command
-               then
-                  Success := True;
-               end if;
-            end;
-         end if;
-      end Decode_Input;
 
       ------------------
       -- Decode_Input --
       ------------------
 
       procedure Decode_Input
-        (Last    : Positive;
-         Command : IOCTL.Command;
-         Data    : out HAL.UInt8_Array;
-         Success : out Boolean)
+        (Input   : Input_Buffer;
+         Command : out IOCTL.Command;
+         From    : out Positive)
       is
          SDPCM : SDPCM_Header
            with Import, Address => Input'Address;
       begin
-         Success := False;
+         From := 1;
+         Command := 0;
 
-         if Last < (SDPCM_Header'Size + IOCTL_Header'Size) / 8 then
+         if Input'Last < (SDPCM_Header'Size + IOCTL_Header'Size) / 8 then
             return;
          elsif Is_Valid (SDPCM.Tag)
            and then SDPCM.Channel <= IOCTL.Data
@@ -438,25 +547,35 @@ package body CYW4343X.Generic_IO is
                Header_Length : constant Positive :=
                  Skip + IOCTL_Header'Size / 8;
 
-               In_Length     : constant Integer :=
-                 Last - Header_Length;
             begin
-               if SDPCM.Channel = Control and then
-                 Command = Header.Command
-               then
-                  declare
-                     Size : constant Natural :=
-                       Natural'Min (In_Length, Data'Length);
-                  begin
-                     Data (1 .. Size) :=
-                       Input (Header_Length + 1 .. Header_Length + Size);
-
-                     Success := True;
-                  end;
+               if SDPCM.Channel = Control then
+                  Command := Header.Command;
+                  From := Header_Length + 1;
                end if;
             end;
          end if;
       end Decode_Input;
+
+      ----------------
+      -- Event_Poll --
+      ----------------
+
+      procedure Event_Poll
+        (Input   : in out Input_Buffer;
+         Command : out IOCTL.Command;
+         From    : out Positive;
+         To      : out Natural) is
+      begin
+         Get_Response (Input, To);
+
+         if To = 0 then
+            Command := 0;
+            From := 1;
+            return;
+         end if;
+
+         Decode_Input (Input (1 .. To), Command, From);
+      end Event_Poll;
 
       ---------
       -- Get --
@@ -485,20 +604,21 @@ package body CYW4343X.Generic_IO is
          TX_Request := Interfaces.Unsigned_16'Succ (TX_Request);
 
          TX_Command :=
-           (Prefix => Write_Prefix
+           (Prefix  => Write_Prefix
               (Bus_Function => CYW4343X.WLAN,
                Address      => 0,
                Length       => Positive (Length) - Write_Prefix_Length),
             Command =>
               (SDPCM =>
-                   (Tag      => Make_Tag (Length),
-                    Sequence => TX_Sequence,
-                    Channel  => Control,
-                    Next_Len => 0,
-                    Hdr_Len  => SDPCM_Header'Size / 8,
-                    Flow     => 0,
-                    Credit   => 0,
-                    Reserved => 0),
+                 (Tag      => Make_Tag
+                    (Length - Interfaces.Unsigned_16 (Write_Prefix_Length)),
+                  Sequence => TX_Sequence,
+                  Channel  => Control,
+                  Next_Len => 0,
+                  Hdr_Len  => SDPCM_Header'Size / 8,
+                  Flow     => 0,
+                  Credit   => 0,
+                  Reserved => 0),
                IOCTL =>
                  (Command    => Command,
                   Out_Length => Out_Length,
@@ -516,16 +636,25 @@ package body CYW4343X.Generic_IO is
 
          for J in 1 .. 1000 loop
             declare
-               Last : Natural;
-               Ok   : Boolean;
+               Got  : IOCTL.Command;
+               From : Positive;
+               To   : Natural;
             begin
-               Get_Response (Input, Last);
+               Event_Poll (Input, Got, From, To);
 
-               if Last = 0 then
+               if To = 0 then
                   RP.Device.Timer.Delay_Milliseconds (1);
-               else
-                  Decode_Input (Last, Command, Data, Ok);
-                  exit when Ok;
+               elsif Got = Command then
+                  declare
+                     Size : constant Natural := To - From + 1;
+                  begin
+                     if Size >= Data'Length then
+                        Data := HAL.UInt8_Array
+                          (Input (From .. From + Data'Length - 1));
+                     else
+                        raise Program_Error;
+                     end if;
+                  end;
                end if;
             end;
          end loop;
@@ -564,14 +693,15 @@ package body CYW4343X.Generic_IO is
                Length       => Positive (Length) - Write_Prefix_Length),
             Command =>
               (SDPCM =>
-                   (Tag      => Make_Tag (Length),
-                    Sequence => TX_Sequence,
-                    Channel  => Control,
-                    Next_Len => 0,
-                    Hdr_Len  => SDPCM_Header'Size / 8,
-                    Flow     => 0,
-                    Credit   => 0,
-                    Reserved => 0),
+                 (Tag      => Make_Tag
+                    (Length - Interfaces.Unsigned_16 (Write_Prefix_Length)),
+                  Sequence => TX_Sequence,
+                  Channel  => Control,
+                  Next_Len => 0,
+                  Hdr_Len  => SDPCM_Header'Size / 8,
+                  Flow     => 0,
+                  Credit   => 0,
+                  Reserved => 0),
                IOCTL =>
                  (Command    => Command,
                   Out_Length => Out_Length,
@@ -597,19 +727,58 @@ package body CYW4343X.Generic_IO is
 
          for J in 1 .. 1000 loop
             declare
-               Last : Natural;
-               Ok   : Boolean;
+               Got    : IOCTL.Command;
+               Ignore : Positive;
+               To     : Natural;
             begin
-               Get_Response (Input, Last);
+               Event_Poll (Input, Got, Ignore, To);
 
-               if Last = 0 then
+               if To = 0 then
                   RP.Device.Timer.Delay_Milliseconds (1);
                else
-                  Decode_Input (Last, Command, Ok);
-                  exit when Ok;
+                  exit when Got = Command;
                end if;
             end;
          end loop;
+      end Set;
+
+      ---------
+      -- Set --
+      ---------
+
+      procedure Set
+        (Command : IOCTL.Command;
+         Name    : String;
+         Data    : HAL.UInt8_Array)
+      is
+         Raw_Name : HAL.UInt8_Array (1 .. Name'Length + 1);
+      begin
+         for J in Name'Range loop
+            Raw_Name (J) := Character'Pos (Name (J));
+         end loop;
+
+         Raw_Name (Raw_Name'Last) := 0;
+
+         Set (Command, Raw_Name, Data);
+      end Set;
+
+      ---------
+      -- Set --
+      ---------
+
+      procedure Set
+        (Command : IOCTL.Command;
+         Name    : String;
+         Data    : Interfaces.Unsigned_32)
+      is
+         subtype Word is HAL.UInt8_Array (1 .. 4);
+
+         function To_Bytes is new Ada.Unchecked_Conversion
+           (Interfaces.Unsigned_32, Word);
+
+         Raw : constant Word := To_Bytes (Data);
+      begin
+         Set (Command, Name, Raw);
       end Set;
 
    end IOCTL;
@@ -620,7 +789,6 @@ package body CYW4343X.Generic_IO is
 
    procedure CLM_Load (Data : HAL.UInt8_Array) is
       MAX_LOAD_LEN : constant := 512;
-      WLC_SET_VAR : constant := 263;
 
       type CLM_Load_Request is record
          Req  : String (1 .. 8);
@@ -666,22 +834,32 @@ package body CYW4343X.Generic_IO is
             Request.Flag := Interfaces.Unsigned_16 (Flag);
 
             IOCTL.Set
-              (Command => WLC_SET_VAR,
+              (Command => IOCTL.WLC_SET_VAR,
                Name    => Raw_Name,
                Data    => Data (From .. From + N - 1));
 
             From := From + N;
          end;
       end loop;
-
    end CLM_Load;
+
+   ----------------
+   -- Event_Poll --
+   ----------------
+
+   procedure Event_Poll is
+      Ignore  : IOCTL.Command;
+      From, To : Natural;
+   begin
+      IOCTL.Event_Poll (Input, Ignore, From, To);
+   end Event_Poll;
 
    ------------------
    -- Get_Response --
    ------------------
 
    procedure Get_Response
-     (Data   : out HAL.UInt8_Array;
+     (Data   : out Input_Buffer;
       Last   : out Natural)
    is
       Length : constant Interfaces.Unsigned_32 := Available_Packet_Length;
@@ -694,7 +872,7 @@ package body CYW4343X.Generic_IO is
          Read
            (Bus_Function => CYW4343X.WLAN,
             Address      => 0,
-            Value        => Data (1 .. Last));
+            Value        => HAL.UInt8_Array (Data (1 .. Last)));
       else
          raise Program_Error;
       end if;
@@ -846,6 +1024,56 @@ package body CYW4343X.Generic_IO is
 
       Success := True;
    end Initialize;
+
+   ----------------
+   -- Join_Start --
+   ----------------
+
+   procedure Start_Join
+     (Success : out Boolean;
+      Country : Generic_IO.Country := XX_Country) is
+   begin
+      Success := True;
+
+      Executor.Execute
+        (Executor.Join_Start,
+         Success,
+         Firmware_1   => (1 .. 0 => <>),
+         Firmware_2   => (1 .. 0 => <>),
+         Custom_Value => 0);
+
+      --  Set country
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "country", HAL.UInt8_Array (Country));
+      --  Select antenna
+      IOCTL.Set (IOCTL.WLC_SET_ANTDIV, "", (0, 0, 0, 0));
+      --  Data aggregation
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "bus:txglom", 0);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "apsta", 1);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "ampdu_ba_wsize", 8);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "ampdu_mpdu", 4);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "ampdu_rx_factor", 0);
+      RP.Device.Timer.Delay_Milliseconds (150);
+
+      --  Enable events for reporting the join process
+      IOCTL.Set
+        (IOCTL.WLC_SET_VAR,
+         "bsscfg:event_msgs",
+         Events.To_Raw_Event_Mask (Events.To_Mask (Events.Join_Events)));
+
+      RP.Device.Timer.Delay_Milliseconds (50);
+
+      --  Enable multicast
+      declare
+         List : constant HAL.UInt8_Array (1 .. 6 * 10) :=
+           (1, 0, 0, 0,
+            16#01#, 16#00#, 16#5E#, 16#00#, 16#00#, 16#FB#,
+            others => 0);
+      begin
+         IOCTL.Set (IOCTL.WLC_SET_VAR, "mcast_list", List);
+
+         RP.Device.Timer.Delay_Milliseconds (50);
+      end;
+   end Start_Join;
 
    ---------------------
    -- Upload_Firmware --

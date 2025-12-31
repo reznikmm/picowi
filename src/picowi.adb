@@ -29,6 +29,7 @@ procedure Picowi is
       Write_Prefix            => CYW4343X_SPI.Write_Prefix,
       Write                   => CYW4343X_SPI.Write,
       Has_Event               => CYW4343X_SPI.Has_Event,
+      Clear_Error             => CYW4343X_SPI.Clear_Error,
       Available_Packet_Length => CYW4343X_SPI.Available_Packet_Length);
 
 begin
@@ -62,6 +63,9 @@ begin
          if not Ok then
             raise Program_Error;
          end if;
+
+         CYW4343X_IO.Start_Join (Ok);
+         pragma Assert (Ok);
       end if;
    end;
 

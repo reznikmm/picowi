@@ -9,8 +9,10 @@ package body CYW4343X.Generic_SPI is
 
    package SPI_Register is
       Bus_Control : constant := 16#00#;
+      INTEN       : constant := 16#04#;  --  SDIOD_CCCR_INTEN
       Status      : constant := 16#08#;
       Read_Test   : constant := 16#14#;
+
    end SPI_Register;
 
    type SPI_Message_Header is record
@@ -66,6 +68,30 @@ package body CYW4343X.Generic_SPI is
         (if (Value and PKT_AVAIL) = 0 then 0
          else Interfaces.Shift_Right (Value, LEN_SHIFT) and LEN_MASK);
    end Available_Packet_Length;
+
+   -----------------
+   -- Clear_Error --
+   -----------------
+
+   procedure Clear_Error is
+      use type Interfaces.Unsigned_32;
+
+      Value : Interfaces.Unsigned_32;
+   begin
+      Read_Register
+        (Bus_Function => CYW4343X.Bus,
+         Address      => SPI_Register.INTEN,
+         Length       => 2,
+         Value        => Value);
+
+      if (Value and 1) /= 0 then
+         Write_Register
+           (Bus_Function => CYW4343X.Bus,
+            Address      => SPI_Register.INTEN,
+            Length       => 2,
+            Value        => Value);
+      end if;
+   end Clear_Error;
 
    -----------------
    -- Detect_Chip --

@@ -41,6 +41,8 @@ generic
 
    with function Available_Packet_Length return Interfaces.Unsigned_32;
 
+   with procedure Clear_Error;
+
 package CYW4343X.Generic_IO is
 
    procedure Initialize
@@ -48,5 +50,25 @@ package CYW4343X.Generic_IO is
       NVRAM    : HAL.UInt8_Array;
       CLM      : HAL.UInt8_Array;
       Success  : out Boolean);
+
+   type Country is private;
+
+   XX_Country : constant Country;
+   --  country code of ‘XX’, which is a common set of world-wide
+   --  characteristics.
+
+   procedure Start_Join
+     (Success : out Boolean;
+      Country : Generic_IO.Country := XX_Country);
+
+   procedure Event_Poll;
+
+private
+   type Country is new HAL.UInt8_Array (1 .. 20);
+
+   XX_Country : constant Country :=
+     (16#58#, 16#58#, 16#00#, 16#00#, 16#FF#, 16#FF#, 16#FF#, 16#FF#,
+      16#58#, 16#58#, others => 16#00#);
+   --  "XX\x00\x00\xFF\xFF\xFF\xFFXX"
 
 end CYW4343X.Generic_IO;

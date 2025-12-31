@@ -53,4 +53,6 @@ package CYW4343X.Generic_SPI is
 
    function Available_Packet_Length return Interfaces.Unsigned_32;
 
+   procedure Clear_Error;
+
 end CYW4343X.Generic_SPI;
