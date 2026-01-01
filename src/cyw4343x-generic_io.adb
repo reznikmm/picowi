@@ -3,8 +3,9 @@
 --  SPDX-License-Identifier: MIT
 ----------------------------------------------------------------
 
+pragma Ada_2022;
+
 with Ada.Unchecked_Conversion;
-with System.Storage_Elements;
 
 with RP.Device;
 
@@ -104,7 +105,7 @@ package body CYW4343X.Generic_IO is
            (if Use_RAM then RAM_Core_Addr else ARM_Core_Addr) - 16#1810_0000#;
 
          List : constant Step_Array :=
-           (1 =>
+           [1 =>
               (Kind         => Write_Register,
                Bus_Function => CYW4343X.Backplane,
                Address      => Backplane_Register.Win_Addr,
@@ -148,11 +149,11 @@ package body CYW4343X.Generic_IO is
                Length       => 1),
             9 =>
               (Kind     => Sleep,
-               Milliseconds => 1));
+               Milliseconds => 1)];
       end Reset;
 
       Join_Start : constant Step_Array :=
-        (1 =>
+        [1 =>
            (Kind         => Write_Register,  --  Clear pullups
             Bus_Function => CYW4343X.Backplane,
             Address      => Backplane_Register.Pull_Up,
@@ -187,7 +188,7 @@ package body CYW4343X.Generic_IO is
            (Kind         => Read_Register,
             Bus_Function => CYW4343X.Backplane,
             Address      => Backplane_Register.Sleep_CSR,
-            Length       => 1));
+            Length       => 1)];
 
    end Executor;
 
@@ -200,6 +201,9 @@ package body CYW4343X.Generic_IO is
    procedure Get_Response
      (Data   : out Input_Buffer;
       Last   : out Natural);
+
+   procedure Restart_Join;
+   procedure Change_State (State : in out Joining_State);
 
    package Events is
 
@@ -234,7 +238,7 @@ package body CYW4343X.Generic_IO is
       type Event_Array is array (Positive range <>) of Event;
 
       Join_Events : constant Event_Array :=
-        (JOIN,
+        [JOIN,
          ASSOC,
          REASSOC,
          ASSOC_REQ_IE,
@@ -244,7 +248,7 @@ package body CYW4343X.Generic_IO is
          AUTH,
          PSK_SUP,
          EAPOL_MSG,
-         DISASSOC_IND);
+         DISASSOC_IND];
 
       function To_Mask (List : Event_Array) return Event_Mask;
 
@@ -261,7 +265,7 @@ package body CYW4343X.Generic_IO is
       -------------
 
       function To_Mask (List : Event_Array) return Event_Mask is
-         Mask : Event_Mask := (others => False);
+         Mask : Event_Mask := [others => False];
       begin
          for Event of List loop
             Mask (Event) := True;
@@ -275,7 +279,7 @@ package body CYW4343X.Generic_IO is
       -----------------------
 
       function To_Raw_Event_Mask (Mask : Event_Mask) return Raw_Event_Mask is
-         Raw : Raw_Event_Mask := (others => 0);
+         Raw : Raw_Event_Mask := [others => 0];
 
          Copy : Event_Mask
            with Import, Address => Raw (5)'Address;
@@ -290,8 +294,17 @@ package body CYW4343X.Generic_IO is
    package IOCTL is
       type Command is new Interfaces.Unsigned_32;
 
-      WLC_SET_VAR : constant Command := 263;
-      WLC_SET_ANTDIV : constant Command := 64;
+      WLC_SET_VAR      : constant Command := 263;
+      WLC_SET_ANTDIV   : constant Command := 64;
+      WLC_UP           : constant Command := 2;
+      WLC_SET_GMODE    : constant Command := 110;
+      WLC_SET_BAND     : constant Command := 142;
+      WLC_SET_INFRA    : constant Command := 20;
+      WLC_SET_AUTH     : constant Command := 22;
+      WLC_SET_WSEC     : constant Command := 134;
+      WLC_SET_WSEC_PMK : constant Command := 268;
+      WLC_SET_WPA_AUTH : constant Command := 165;
+      WLC_SET_SSID     : constant Command := 26;
 
       procedure Set
         (Command : IOCTL.Command;
@@ -314,18 +327,236 @@ package body CYW4343X.Generic_IO is
          Name    : HAL.UInt8_Array;
          Data    : out HAL.UInt8_Array);
 
-      procedure Event_Poll
-        (Input   : in out Input_Buffer;
-         Command : out IOCTL.Command;
-         From    : out Positive;
-         To      : out Natural);
+      type IOCTL_Header is record
+         Command    : IOCTL.Command;
+         Out_Length : Interfaces.Unsigned_16;
+         In_Length  : Interfaces.Unsigned_16;
+         Flags      : Interfaces.Unsigned_32;
+         Status     : Interfaces.Unsigned_32;
+      end record;
 
-      procedure Decode_Input
-        (Input   : Input_Buffer;
-         Command : out IOCTL.Command;
-         From    : out Positive);
+      for IOCTL_Header use record
+         Command    at 0 range 0 .. 31;
+         Out_Length at 4 range 0 .. 15;
+         In_Length  at 6 range 0 .. 15;
+         Flags      at 8 range 0 .. 31;
+         Status     at 12 range 0 .. 31;
+      end record;
 
    end IOCTL;
+
+   package SDPCM is
+      type BDC_Header is record
+         Flags    : Interfaces.Unsigned_8;
+         Priority : Interfaces.Unsigned_8;
+         Flags2   : Interfaces.Unsigned_8;
+         Offset   : Natural range 0 .. 255;
+      end record;
+
+      for BDC_Header use record
+         Flags    at 0 range 0 .. 7;
+         Priority at 1 range 0 .. 7;
+         Flags2   at 2 range 0 .. 7;
+         Offset   at 3 range 0 .. 7;
+      end record;
+
+      function Is_Valid (Tag : Frame_Tag) return Boolean is
+        (((Interfaces.Shift_Right (Tag, 16) xor Tag) and 16#FFFF#) = 16#FFFF#);
+
+      type SDPCM_Channel is new Interfaces.Unsigned_8;
+
+      Control : constant SDPCM_Channel := 0;
+      Event   : constant SDPCM_Channel := 1;
+      Data    : constant SDPCM_Channel := 2;
+
+      subtype Event_Or_Data is SDPCM_Channel range Event .. Data;
+
+      type SDPCM_Header is record
+         Tag      : Frame_Tag;
+         Sequence : Interfaces.Unsigned_8;
+         Channel  : SDPCM_Channel;
+         Next_Len : Interfaces.Unsigned_8;
+         Hdr_Len  : Natural range 0 .. 255;  --  SDPCM header plus any padding
+         Flow     : Interfaces.Unsigned_8;
+         Credit   : Interfaces.Unsigned_8;
+         Reserved : Interfaces.Unsigned_16;
+      end record;
+
+      for SDPCM_Header use record
+         Tag      at 0 range 0 .. 31;
+         Sequence at 4 range 0 .. 7;
+         Channel  at 5 range 0 .. 7;
+         Next_Len at 6 range 0 .. 7;
+         Hdr_Len  at 7 range 0 .. 7;
+         Flow     at 8 range 0 .. 7;
+         Credit   at 9 range 0 .. 7;
+         Reserved at 10 range 0 .. 15;
+      end record;
+
+      type Packet (Channel : SDPCM_Channel := 0) is record
+         case Channel is
+            when Control =>
+               IOCTL_Header : IOCTL.IOCTL_Header;
+               IOCTL_Offset : Natural;
+            when Event | Data =>
+               Offset       : Natural;
+            when others =>
+               null;
+         end case;
+      end record;
+
+      procedure Event_Poll
+        (Input  : in out Input_Buffer;
+         Packet : out SDPCM.Packet;
+         To     : out Natural);
+
+      procedure Decode_Input
+        (Input  : Input_Buffer;
+         Result : out Packet);
+
+   end SDPCM;
+
+   package body SDPCM is
+
+      ------------------
+      -- Decode_Input --
+      ------------------
+
+      procedure Decode_Input
+        (Input  : Input_Buffer;
+         Result : out Packet)
+      is
+         subtype IOCTL_Header_Raw is
+           Input_Buffer (1 .. IOCTL.IOCTL_Header'Size / 8);
+
+         function To_IOCTL_Header is new Ada.Unchecked_Conversion
+           (IOCTL_Header_Raw, IOCTL.IOCTL_Header);
+
+         subtype BDC_Header_Raw is
+           Input_Buffer (1 .. BDC_Header'Size / 8);
+
+         function To_BDC_Header is new Ada.Unchecked_Conversion
+           (BDC_Header_Raw, BDC_Header);
+
+         SDPCM : SDPCM_Header
+           with Import, Address => Input'Address;
+      begin
+         if not Is_Valid (SDPCM.Tag) or else
+           (SDPCM.Channel = Control and then
+            Input'Last < SDPCM.Hdr_Len + IOCTL.IOCTL_Header'Size / 8)
+           or else
+           (SDPCM.Channel in Event | Data and then
+            Input'Last < SDPCM.Hdr_Len + BDC_Header'Size / 8)
+         then
+            Result := (Channel => SDPCM_Channel'Last);
+         elsif SDPCM.Channel = Control then
+            declare
+               Skip : constant Natural := SDPCM.Hdr_Len;
+
+               Header : constant IOCTL.IOCTL_Header := To_IOCTL_Header
+                 (Input (Skip + 1 .. Skip + IOCTL.IOCTL_Header'Size / 8));
+
+               Header_Length : constant Positive :=
+                 Skip + IOCTL.IOCTL_Header'Size / 8;
+
+            begin
+               Result := (Control, Header, Header_Length + 1);
+            end;
+         elsif SDPCM.Channel in Event .. Data then
+            declare
+               Skip : constant Natural := SDPCM.Hdr_Len;
+
+               BDC : constant BDC_Header := To_BDC_Header
+                 (Input (Skip + 1 .. Skip + BDC_Header'Size / 8));
+
+               Header_Length : constant Positive :=
+                 Skip + BDC'Size / 8 + 4 * BDC.Offset;
+
+            begin
+               if Input'Last >= Header_Length + 1 then
+                  Result :=
+                    (Channel => Event_Or_Data (SDPCM.Channel),
+                     Offset  => Header_Length + 1);
+               end if;
+            end;
+         end if;
+      end Decode_Input;
+
+      type ETHER_HDR is record
+         Dest_Addr : HAL.UInt8_Array (1 .. 6);
+         Srce_Addr : HAL.UInt8_Array (1 .. 6);
+         Tipe      : Interfaces.Unsigned_16;
+      end record
+        with Pack;
+
+      type BCMETH_HDR is record
+         Subtipe     : Interfaces.Unsigned_16;
+         Len         : Interfaces.Unsigned_16;
+         Ver         : Interfaces.Unsigned_8;
+         Oui         : HAL.UInt8_Array (1 .. 3);
+         Usr_Subtype : Interfaces.Unsigned_16;
+      end record
+        with Pack;
+
+      type EVENT_HDR is record
+         Ver        : Interfaces.Unsigned_16;
+         Flags      : Interfaces.Unsigned_16;
+         Event_Type : Interfaces.Unsigned_32;
+         Status     : Interfaces.Unsigned_32;
+         Reason     : Interfaces.Unsigned_32;
+         Auth_Type  : Interfaces.Unsigned_32;
+         Datalen    : Interfaces.Unsigned_32;
+         Addr       : HAL.UInt8_Array (1 .. 6);
+         Ifname     : HAL.UInt8_Array (1 .. 16);
+         Ifidx      : Interfaces.Unsigned_8;
+         Bsscfgidx  : Interfaces.Unsigned_8;
+      end record
+        with Pack;
+
+      type Event_Record is record
+         Ether  : ETHER_HDR;
+         Bcmeth : BCMETH_HDR;
+         Eventh : EVENT_HDR;
+      end record
+        with Pack;
+
+      ----------------
+      -- Event_Poll --
+      ----------------
+
+      procedure Event_Poll
+        (Input  : in out Input_Buffer;
+         Packet : out SDPCM.Packet;
+         To     : out Natural)
+      is
+         Event_Length : constant Positive := Event_Record'Size / 8;
+         subtype Event_Record_Raw is HAL.UInt8_Array (1 .. Event_Length);
+
+         function To_Event_Record is new Ada.Unchecked_Conversion
+           (Event_Record_Raw, Event_Record);
+
+         Event : Event_Record;
+      begin
+         Get_Response (Input, To);
+
+         if To = 0 then
+            Packet := (Channel => SDPCM.SDPCM_Channel'Last);
+         else
+            Decode_Input (Input (1 .. To), Packet);
+
+            if Packet.Channel = SDPCM.Event
+              and then To - Packet.Offset + 1 >= Event_Length
+            then
+               Event := To_Event_Record
+                 (HAL.UInt8_Array
+                   (Input
+                     (Packet.Offset .. Packet.Offset + Event_Length - 1)));
+               pragma Assert (Event.Eventh.Ver /= 123);
+            end if;
+         end if;
+      end Event_Poll;
+
+   end SDPCM;
 
    package body Executor is
 
@@ -423,159 +654,17 @@ package body CYW4343X.Generic_IO is
 
    package body IOCTL is
 
-      type BDC_Header is record
-         Flags    : Interfaces.Unsigned_8;
-         Priority : Interfaces.Unsigned_8;
-         Flags2   : Interfaces.Unsigned_8;
-         Offset   : Interfaces.Unsigned_8;
-      end record;
-
-      for BDC_Header use record
-         Flags    at 0 range 0 .. 7;
-         Priority at 1 range 0 .. 7;
-         Flags2   at 2 range 0 .. 7;
-         Offset   at 3 range 0 .. 7;
-      end record;
-
-      function Is_Valid (Tag : Frame_Tag) return Boolean is
-        (((Interfaces.Shift_Right (Tag, 16) xor Tag) and 16#FFFF#) = 16#FFFF#);
-
-      type SDPCM_Channel is new Interfaces.Unsigned_8;
-
-      Control : constant SDPCM_Channel := 0;
-      Event   : constant SDPCM_Channel := 1;
-      pragma Unreferenced (Event);
-      Data    : constant SDPCM_Channel := 2;
-
-      type SDPCM_Header is record
-         Tag      : Frame_Tag;
-         Sequence : Interfaces.Unsigned_8;
-         Channel  : SDPCM_Channel;
-         Next_Len : Interfaces.Unsigned_8;
-         Hdr_Len  : Interfaces.Unsigned_8;  --  SDPCM header plus any padding
-         Flow     : Interfaces.Unsigned_8;
-         Credit   : Interfaces.Unsigned_8;
-         Reserved : Interfaces.Unsigned_16;
-      end record;
-
-      for SDPCM_Header use record
-         Tag      at 0 range 0 .. 31;
-         Sequence at 4 range 0 .. 7;
-         Channel  at 5 range 0 .. 7;
-         Next_Len at 6 range 0 .. 7;
-         Hdr_Len  at 7 range 0 .. 7;
-         Flow     at 8 range 0 .. 7;
-         Credit   at 9 range 0 .. 7;
-         Reserved at 10 range 0 .. 15;
-      end record;
-
-      type IOCTL_Header is record
-         Command    : IOCTL.Command;
-         Out_Length : Interfaces.Unsigned_16;
-         In_Length  : Interfaces.Unsigned_16;
-         Flags      : Interfaces.Unsigned_32;
-         Status     : Interfaces.Unsigned_32;
-      end record;
-
-      for IOCTL_Header use record
-         Command    at 0 range 0 .. 31;
-         Out_Length at 4 range 0 .. 15;
-         In_Length  at 6 range 0 .. 15;
-         Flags      at 8 range 0 .. 31;
-         Status     at 12 range 0 .. 31;
-      end record;
-
-      subtype IOCTL_Header_Raw is Input_Buffer (1 .. IOCTL_Header'Size / 8);
-
-      function To_IOCTL_Header is new Ada.Unchecked_Conversion
-        (IOCTL_Header_Raw, IOCTL_Header);
-
-      type IOCTL_Command is record
-         SDPCM : SDPCM_Header;
-         IOCTL : IOCTL_Header;
-         Data  : HAL.UInt8_Array (1 .. 1536);
-      end record;
-
-      for IOCTL_Command use record
-         SDPCM at 0  range 0 .. 12 * 8 - 1;
-         IOCTL at 12 range 0 .. 16 * 8 - 1;
-         Data  at 28 range 0 .. 1536 * 8 - 1;
-      end record;
-
       type Output_IOCTL_Command is record
          Prefix  : HAL.UInt8_Array (1 .. Write_Prefix_Length);
-         Command : IOCTL_Command;
+         SDPCM   : Generic_IO.SDPCM.SDPCM_Header;
+         IOCTL   : IOCTL_Header;
+         Data    : HAL.UInt8_Array (1 .. 1536);
       end record
         with Pack;
 
       TX_Command  : Output_IOCTL_Command;
       TX_Sequence : Interfaces.Unsigned_8 := 0;
       TX_Request  : Interfaces.Unsigned_16 := 0;
-
-      ------------------
-      -- Decode_Input --
-      ------------------
-
-      procedure Decode_Input
-        (Input   : Input_Buffer;
-         Command : out IOCTL.Command;
-         From    : out Positive)
-      is
-         SDPCM : SDPCM_Header
-           with Import, Address => Input'Address;
-      begin
-         From := 1;
-         Command := 0;
-
-         if Input'Last < (SDPCM_Header'Size + IOCTL_Header'Size) / 8 then
-            return;
-         elsif Is_Valid (SDPCM.Tag)
-           and then SDPCM.Channel <= IOCTL.Data
-         then
-            declare
-               use System.Storage_Elements;
-
-               BDC : BDC_Header
-                 with Import,
-                 Address => Input'Address + Storage_Offset (SDPCM.Hdr_Len);
-
-               Skip : constant Positive := Positive (SDPCM.Hdr_Len);
-
-               Header : constant IOCTL_Header := To_IOCTL_Header
-                 (Input (Skip + 1 .. Skip + IOCTL_Header'Size / 8));
-
-               Header_Length : constant Positive :=
-                 Skip + IOCTL_Header'Size / 8;
-
-            begin
-               if SDPCM.Channel = Control then
-                  Command := Header.Command;
-                  From := Header_Length + 1;
-               end if;
-            end;
-         end if;
-      end Decode_Input;
-
-      ----------------
-      -- Event_Poll --
-      ----------------
-
-      procedure Event_Poll
-        (Input   : in out Input_Buffer;
-         Command : out IOCTL.Command;
-         From    : out Positive;
-         To      : out Natural) is
-      begin
-         Get_Response (Input, To);
-
-         if To = 0 then
-            Command := 0;
-            From := 1;
-            return;
-         end if;
-
-         Decode_Input (Input (1 .. To), Command, From);
-      end Event_Poll;
 
       ---------
       -- Get --
@@ -593,7 +682,7 @@ package body CYW4343X.Generic_IO is
 
          Length     : constant Interfaces.Unsigned_16 :=
            Interfaces.Unsigned_16 (Write_Prefix_Length) +
-           (SDPCM_Header'Size + IOCTL_Header'Size) / 8 +
+           (SDPCM.SDPCM_Header'Size + IOCTL_Header'Size) / 8 +
            Out_Length;
 
          Raw : HAL.UInt8_Array (1 .. Positive (Length))
@@ -608,26 +697,25 @@ package body CYW4343X.Generic_IO is
               (Bus_Function => CYW4343X.WLAN,
                Address      => 0,
                Length       => Positive (Length) - Write_Prefix_Length),
-            Command =>
-              (SDPCM =>
-                 (Tag      => Make_Tag
-                    (Length - Interfaces.Unsigned_16 (Write_Prefix_Length)),
-                  Sequence => TX_Sequence,
-                  Channel  => Control,
-                  Next_Len => 0,
-                  Hdr_Len  => SDPCM_Header'Size / 8,
-                  Flow     => 0,
-                  Credit   => 0,
-                  Reserved => 0),
-               IOCTL =>
-                 (Command    => Command,
-                  Out_Length => Out_Length,
-                  In_Length  => 0,
-                  Flags      => Interfaces.Unsigned_32 (TX_Request) * 2**16,
-                  Status     => 0),
-               Data  => <>));
+            SDPCM   =>
+              (Tag      => Make_Tag
+                   (Length - Interfaces.Unsigned_16 (Write_Prefix_Length)),
+               Sequence => TX_Sequence,
+               Channel  => SDPCM.Control,
+               Next_Len => 0,
+               Hdr_Len  => SDPCM.SDPCM_Header'Size / 8,
+               Flow     => 0,
+               Credit   => 0,
+               Reserved => 0),
+            IOCTL   =>
+              (Command    => Command,
+               Out_Length => Out_Length,
+               In_Length  => 0,
+               Flags      => Interfaces.Unsigned_32 (TX_Request) * 2**16,
+               Status     => 0),
+            Data    => <>);
 
-         TX_Command.Command.Data (1 .. Name'Length) := Name;
+         TX_Command.Data (1 .. Name'Length) := Name;
 
          Write
            (Bus_Function => CYW4343X.WLAN,
@@ -636,16 +724,19 @@ package body CYW4343X.Generic_IO is
 
          for J in 1 .. 1000 loop
             declare
-               Got  : IOCTL.Command;
-               From : Positive;
+               use type SDPCM.SDPCM_Channel;
+               Got  : SDPCM.Packet;
                To   : Natural;
             begin
-               Event_Poll (Input, Got, From, To);
+               SDPCM.Event_Poll (Input, Got, To);
 
                if To = 0 then
                   RP.Device.Timer.Delay_Milliseconds (1);
-               elsif Got = Command then
+               elsif Got.Channel = SDPCM.Control and then
+                 Got.IOCTL_Header.Command = Command
+               then
                   declare
+                     From : constant Natural := Got.IOCTL_Offset;
                      Size : constant Natural := To - From + 1;
                   begin
                      if Size >= Data'Length then
@@ -676,7 +767,7 @@ package body CYW4343X.Generic_IO is
 
          Length     : constant Interfaces.Unsigned_16 :=
            Interfaces.Unsigned_16 (Write_Prefix_Length) +
-           (SDPCM_Header'Size + IOCTL_Header'Size) / 8 +
+           (SDPCM.SDPCM_Header'Size + IOCTL_Header'Size) / 8 +
            Out_Length;
 
          Raw : HAL.UInt8_Array (1 .. Positive (Length))
@@ -691,34 +782,33 @@ package body CYW4343X.Generic_IO is
               (Bus_Function => CYW4343X.WLAN,
                Address      => 0,
                Length       => Positive (Length) - Write_Prefix_Length),
-            Command =>
-              (SDPCM =>
-                 (Tag      => Make_Tag
-                    (Length - Interfaces.Unsigned_16 (Write_Prefix_Length)),
-                  Sequence => TX_Sequence,
-                  Channel  => Control,
-                  Next_Len => 0,
-                  Hdr_Len  => SDPCM_Header'Size / 8,
-                  Flow     => 0,
-                  Credit   => 0,
-                  Reserved => 0),
-               IOCTL =>
-                 (Command    => Command,
-                  Out_Length => Out_Length,
-                  In_Length  => 0,
-                  Flags      =>
-                    Interfaces.Unsigned_32 (TX_Request) * 2**16 + 2,
-                  Status     => 0),
-               Data  => <>));
+            SDPCM  =>
+              (Tag      => Make_Tag
+                   (Length - Interfaces.Unsigned_16 (Write_Prefix_Length)),
+               Sequence => TX_Sequence,
+               Channel  => SDPCM.Control,
+               Next_Len => 0,
+               Hdr_Len  => SDPCM.SDPCM_Header'Size / 8,
+               Flow     => 0,
+               Credit   => 0,
+               Reserved => 0),
+            IOCTL  =>
+              (Command    => Command,
+               Out_Length => Out_Length,
+               In_Length  => 0,
+               Flags      =>
+                 Interfaces.Unsigned_32 (TX_Request) * 2**16 + 2,
+               Status     => 0),
+            Data   => <>);
 
-         TX_Command.Command.Data (1 .. Name'Length) := Name;
+         TX_Command.Data (1 .. Name'Length) := Name;
 
-         TX_Command.Command.Data (Name'Length + 1 .. Name'Length + Data'Length)
+         TX_Command.Data (Name'Length + 1 .. Name'Length + Data'Length)
            := Data;
 
-         TX_Command.Command.Data
+         TX_Command.Data
            (Name'Length + Data'Length + 1 .. Natural (Out_Length)) :=
-             (others => 0);
+             [others => 0];
 
          Write
            (Bus_Function => CYW4343X.WLAN,
@@ -727,16 +817,16 @@ package body CYW4343X.Generic_IO is
 
          for J in 1 .. 1000 loop
             declare
-               Got    : IOCTL.Command;
-               Ignore : Positive;
-               To     : Natural;
+               use type SDPCM.SDPCM_Channel;
+               Got : SDPCM.Packet;
+               To  : Natural;
             begin
-               Event_Poll (Input, Got, Ignore, To);
+               SDPCM.Event_Poll (Input, Got, To);
 
                if To = 0 then
                   RP.Device.Timer.Delay_Milliseconds (1);
-               else
-                  exit when Got = Command;
+               elsif Got.Channel = SDPCM.Control then
+                  exit when Got.IOCTL_Header.Command = Command;
                end if;
             end;
          end loop;
@@ -753,13 +843,17 @@ package body CYW4343X.Generic_IO is
       is
          Raw_Name : HAL.UInt8_Array (1 .. Name'Length + 1);
       begin
-         for J in Name'Range loop
-            Raw_Name (J) := Character'Pos (Name (J));
-         end loop;
+         if Name = "" then
+            Set (Command, Raw_Name (1 .. 0), Data);
+         else
+            for J in Name'Range loop
+               Raw_Name (J) := Character'Pos (Name (J));
+            end loop;
 
-         Raw_Name (Raw_Name'Last) := 0;
+            Raw_Name (Raw_Name'Last) := 0;
 
-         Set (Command, Raw_Name, Data);
+            Set (Command, Raw_Name, Data);
+         end if;
       end Set;
 
       ---------
@@ -782,6 +876,23 @@ package body CYW4343X.Generic_IO is
       end Set;
 
    end IOCTL;
+
+   ------------------
+   -- Change_State --
+   ------------------
+
+   procedure Change_State (State : in out Joining_State) is
+   begin
+      case State.Kind is
+         when Idle =>
+            State := (Kind => Joining, Expire => Timeout (10));
+            Restart_Join;
+         when Joining =>
+            null;
+         when others =>
+            raise Program_Error;
+      end case;
+   end Change_State;
 
    --------------
    -- CLM_Load --
@@ -809,7 +920,7 @@ package body CYW4343X.Generic_IO is
       NUL : constant Character := Character'Val (0);
 
       Request : CLM_Load_Request :=
-         (Req  => ('c', 'l', 'm', 'l', 'o', 'a', 'd', others => NUL),
+         (Req  => ['c', 'l', 'm', 'l', 'o', 'a', 'd', others => NUL],
           Flag => 0,
           Tipe => 2,
           Len  => 0,
@@ -847,11 +958,12 @@ package body CYW4343X.Generic_IO is
    -- Event_Poll --
    ----------------
 
-   procedure Event_Poll is
-      Ignore  : IOCTL.Command;
-      From, To : Natural;
+   procedure Event_Poll (State : in out Joining_State) is
+      Ignore  : SDPCM.Packet;
+      To      : Natural;
    begin
-      IOCTL.Event_Poll (Input, Ignore, From, To);
+      SDPCM.Event_Poll (Input, Ignore, To);
+      Change_State (State);
    end Event_Poll;
 
    ------------------
@@ -1025,6 +1137,86 @@ package body CYW4343X.Generic_IO is
       Success := True;
    end Initialize;
 
+   procedure Restart_Join is
+      Mode : constant CYW4343X.Security_Mode := Security_Mode;
+   begin
+      IOCTL.Set (IOCTL.WLC_UP, "", []);
+      IOCTL.Set (IOCTL.WLC_SET_GMODE, "", 1);
+      IOCTL.Set (IOCTL.WLC_SET_BAND, "", 0);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "pm2_sleep_ret", 16#C8#);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "bcn_li_bcn", 1);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "bcn_li_dtim", 1);
+      IOCTL.Set (IOCTL.WLC_SET_VAR, "assoc_listen", 16#0A#);
+      IOCTL.Set (IOCTL.WLC_SET_INFRA, "", 1);
+      IOCTL.Set (IOCTL.WLC_SET_AUTH, "", 0);
+
+      case Mode is
+         when WPA_TKIP | WPA2_AES =>
+            IOCTL.Set
+              (IOCTL.WLC_SET_WSEC, "", (if Mode = WPA2_AES then 6 else 2));
+
+            IOCTL.Set
+              (IOCTL.WLC_SET_VAR, "bsscfg:sup_wpa",
+               [16#00#, 16#00#, 16#00#, 16#00#,
+                16#01#, 16#00#, 16#00#, 16#00#]);
+
+            IOCTL.Set
+              (IOCTL.WLC_SET_VAR,
+               "bsscfg:sup_wpa2_eapver",
+               [16#00#, 16#00#, 16#00#, 16#00#,
+                16#FF#, 16#FF#, 16#FF#, 16#FF#]);
+
+            IOCTL.Set
+              (IOCTL.WLC_SET_VAR,
+               "bsscfg:sup_wpa_tmo",
+               [16#00#, 16#00#, 16#00#, 16#00#,
+                16#C4#, 16#09#, 16#00#, 16#00#]);
+
+            RP.Device.Timer.Delay_Milliseconds (2);
+
+            --  Set password
+            declare
+               Value : constant String := Password;
+               Raw   : HAL.UInt8_Array (1 .. Value'Length + 4);
+            begin
+               Raw (1) := Value'Length;
+               Raw (2) := 0;
+               Raw (3) := 1;
+               Raw (4) := 0;
+               for J in Value'Range loop
+                  Raw (4 + J) := Character'Pos (Value (J));
+               end loop;
+               IOCTL.Set (IOCTL.WLC_SET_WSEC_PMK, "", Raw);
+            end;
+
+            IOCTL.Set (IOCTL.WLC_SET_INFRA, "", 1);
+            IOCTL.Set (IOCTL.WLC_SET_AUTH, "", 0);
+
+            IOCTL.Set
+              (IOCTL.WLC_SET_WPA_AUTH,
+               "",
+               (if Mode = WPA2_AES then 16#80# else 4));
+
+            --  Set SSID
+            declare
+               Value : constant String := SSID;
+               Raw   : HAL.UInt8_Array (1 .. Value'Length + 4);
+            begin
+               Raw (1) := Value'Length;
+               Raw (2) := 0;
+               Raw (3) := 0;
+               Raw (4) := 0;
+               for J in Value'Range loop
+                  Raw (4 + J) := Character'Pos (Value (J));
+               end loop;
+               IOCTL.Set (IOCTL.WLC_SET_SSID, "", Raw);
+            end;
+
+         when None =>
+            raise Program_Error;
+      end case;
+   end Restart_Join;
+
    ----------------
    -- Join_Start --
    ----------------
@@ -1038,14 +1230,14 @@ package body CYW4343X.Generic_IO is
       Executor.Execute
         (Executor.Join_Start,
          Success,
-         Firmware_1   => (1 .. 0 => <>),
-         Firmware_2   => (1 .. 0 => <>),
+         Firmware_1   => [],
+         Firmware_2   => [],
          Custom_Value => 0);
 
       --  Set country
       IOCTL.Set (IOCTL.WLC_SET_VAR, "country", HAL.UInt8_Array (Country));
       --  Select antenna
-      IOCTL.Set (IOCTL.WLC_SET_ANTDIV, "", (0, 0, 0, 0));
+      IOCTL.Set (IOCTL.WLC_SET_ANTDIV, "", [0, 0, 0, 0]);
       --  Data aggregation
       IOCTL.Set (IOCTL.WLC_SET_VAR, "bus:txglom", 0);
       IOCTL.Set (IOCTL.WLC_SET_VAR, "apsta", 1);
@@ -1065,9 +1257,9 @@ package body CYW4343X.Generic_IO is
       --  Enable multicast
       declare
          List : constant HAL.UInt8_Array (1 .. 6 * 10) :=
-           (1, 0, 0, 0,
+           [1, 0, 0, 0,
             16#01#, 16#00#, 16#5E#, 16#00#, 16#00#, 16#FB#,
-            others => 0);
+            others => 0];
       begin
          IOCTL.Set (IOCTL.WLC_SET_VAR, "mcast_list", List);
 

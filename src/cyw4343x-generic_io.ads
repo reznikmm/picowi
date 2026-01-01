@@ -43,6 +43,15 @@ generic
 
    with procedure Clear_Error;
 
+   --  Join parameters:
+   with function SSID     return String;
+   with function Password return String;
+   with function Security_Mode return CYW4343X.Security_Mode;
+
+   --  Timeout interface
+   type Time is private;
+   with function Timeout (Second : Natural) return Time;
+   with function Is_Expired (Timeout : Time) return Boolean;
 package CYW4343X.Generic_IO is
 
    procedure Initialize
@@ -61,7 +70,9 @@ package CYW4343X.Generic_IO is
      (Success : out Boolean;
       Country : Generic_IO.Country := XX_Country);
 
-   procedure Event_Poll;
+   type Joining_State is private;
+
+   procedure Event_Poll (State : in out Joining_State);
 
 private
    type Country is new HAL.UInt8_Array (1 .. 20);
@@ -70,5 +81,12 @@ private
      (16#58#, 16#58#, 16#00#, 16#00#, 16#FF#, 16#FF#, 16#FF#, 16#FF#,
       16#58#, 16#58#, others => 16#00#);
    --  "XX\x00\x00\xFF\xFF\xFF\xFFXX"
+
+   type Joining_State_Kind is (Idle, Joining, Joined, Failed);
+
+   type Joining_State is record
+      Kind   : Joining_State_Kind := Idle;
+      Expire : Time;
+   end record;
 
 end CYW4343X.Generic_IO;

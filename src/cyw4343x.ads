@@ -8,4 +8,6 @@ package CYW4343X is
 
    type Bus_Function is (Bus, Backplane, WLAN);
 
+   type Security_Mode is (None, WPA_TKIP, WPA2_AES);
+
 end CYW4343X;
