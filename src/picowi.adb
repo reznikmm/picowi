@@ -62,6 +62,7 @@ begin
 
    declare
       Ok : Boolean;
+      MAC : CYW4343X_IO.Ether_Addr;
    begin
       for J in 1 .. 4 loop
          RP.Device.Timer.Delay_Milliseconds (2);
@@ -77,16 +78,18 @@ begin
          end if;
 
          CYW4343X_IO.Initialize
-           (CYW4343X.Firmware_43439.Firmware_Image,
+           (State,
+            CYW4343X.Firmware_43439.Firmware_Image,
             CYW4343X.Firmware_43439.NVRAM_Image,
             CYW4343X.Firmware_43439.CLM_Data_Image,
+            MAC,
             Ok);
 
          if not Ok then
             raise Program_Error;
          end if;
 
-         CYW4343X_IO.Start_Join (Ok);
+         CYW4343X_IO.Start_Join (State, Ok);
          pragma Assert (Ok);
       end if;
    end;
@@ -94,5 +97,9 @@ begin
    loop
       CYW4343X_IO.Event_Poll (State);
       RP.Device.Timer.Delay_Milliseconds (1);
+
+      if CYW4343X_IO.Is_Joined (State) then
+         CYW4343X_IO.Turn_LED (True);
+      end if;
    end loop;
 end Picowi;

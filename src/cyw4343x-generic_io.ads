@@ -54,10 +54,16 @@ generic
    with function Is_Expired (Timeout : Time) return Boolean;
 package CYW4343X.Generic_IO is
 
+   type Joining_State is private;
+
+   subtype Ether_Addr is HAL.UInt8_Array (1 .. 6);
+
    procedure Initialize
-     (Firmware : HAL.UInt8_Array;
+     (State    : in out Joining_State;
+      Firmware : HAL.UInt8_Array;
       NVRAM    : HAL.UInt8_Array;
       CLM      : HAL.UInt8_Array;
+      My_MAC   : out Ether_Addr;
       Success  : out Boolean);
 
    type Country is private;
@@ -67,12 +73,15 @@ package CYW4343X.Generic_IO is
    --  characteristics.
 
    procedure Start_Join
-     (Success : out Boolean;
+     (State   : in out Joining_State;
+      Success : out Boolean;
       Country : Generic_IO.Country := XX_Country);
 
-   type Joining_State is private;
-
    procedure Event_Poll (State : in out Joining_State);
+
+   function Is_Joined (State : Joining_State) return Boolean;
+
+   procedure Turn_LED (Value : Boolean);
 
 private
    type Country is new HAL.UInt8_Array (1 .. 20);
@@ -85,8 +94,14 @@ private
    type Joining_State_Kind is (Idle, Joining, Joined, Failed);
 
    type Joining_State is record
-      Kind   : Joining_State_Kind := Idle;
-      Expire : Time;
+      Kind      : Joining_State_Kind := Idle;
+      Expire    : Time;
+      Link_Up   : Boolean := False;
+      Link_Auth : Boolean := False;
+      Link_Fail : Boolean := False;
    end record;
+
+   function Is_Joined (State : Joining_State) return Boolean is
+      (State.Kind = Joined);
 
 end CYW4343X.Generic_IO;

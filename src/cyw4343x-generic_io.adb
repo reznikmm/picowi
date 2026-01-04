@@ -196,13 +196,17 @@ package body CYW4343X.Generic_IO is
      (Address : Interfaces.Unsigned_32;
       Data    : HAL.UInt8_Array);
 
-   procedure CLM_Load (Data : HAL.UInt8_Array);
+   procedure CLM_Load
+     (State : in out Joining_State;
+      Data  : HAL.UInt8_Array);
 
    procedure Get_Response
      (Data   : out Input_Buffer;
       Last   : out Natural);
 
-   procedure Restart_Join;
+   procedure Restart_Join (State : in out Joining_State);
+   procedure Stop_Join (State : in out Joining_State);
+
    procedure Change_State (State : in out Joining_State);
 
    package Events is
@@ -294,36 +298,41 @@ package body CYW4343X.Generic_IO is
    package IOCTL is
       type Command is new Interfaces.Unsigned_32;
 
-      WLC_SET_VAR      : constant Command := 263;
-      WLC_SET_ANTDIV   : constant Command := 64;
       WLC_UP           : constant Command := 2;
-      WLC_SET_GMODE    : constant Command := 110;
-      WLC_SET_BAND     : constant Command := 142;
+      WLC_DOWN         : constant Command := 3;
       WLC_SET_INFRA    : constant Command := 20;
       WLC_SET_AUTH     : constant Command := 22;
-      WLC_SET_WSEC     : constant Command := 134;
-      WLC_SET_WSEC_PMK : constant Command := 268;
-      WLC_SET_WPA_AUTH : constant Command := 165;
       WLC_SET_SSID     : constant Command := 26;
+      WLC_SET_ANTDIV   : constant Command := 64;
+      WLC_SET_GMODE    : constant Command := 110;
+      WLC_SET_WSEC     : constant Command := 134;
+      WLC_SET_BAND     : constant Command := 142;
+      WLC_SET_WPA_AUTH : constant Command := 165;
+      WLC_SET_VAR      : constant Command := 263;
+      WLC_SET_WSEC_PMK : constant Command := 268;
 
       procedure Set
-        (Command : IOCTL.Command;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command;
          Name    : HAL.UInt8_Array;
          Data    : HAL.UInt8_Array);
 
       procedure Set
-        (Command : IOCTL.Command;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command;
          Name    : String;
          Data    : HAL.UInt8_Array);
       --  TBD: Timeout parameter, success result
 
       procedure Set
-        (Command : IOCTL.Command;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command;
          Name    : String;
          Data    : Interfaces.Unsigned_32);
 
       procedure Get
-        (Command : IOCTL.Command := 262;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command := 262;
          Name    : HAL.UInt8_Array;
          Data    : out HAL.UInt8_Array);
 
@@ -406,7 +415,8 @@ package body CYW4343X.Generic_IO is
       end record;
 
       procedure Event_Poll
-        (Input  : in out Input_Buffer;
+        (State  : in out Joining_State;
+         Input  : in out Input_Buffer;
          Packet : out SDPCM.Packet;
          To     : out Natural);
 
@@ -520,12 +530,17 @@ package body CYW4343X.Generic_IO is
       end record
         with Pack;
 
+      procedure On_Event
+        (State : in out Joining_State;
+         Event : Event_Record);
+
       ----------------
       -- Event_Poll --
       ----------------
 
       procedure Event_Poll
-        (Input  : in out Input_Buffer;
+        (State  : in out Joining_State;
+         Input  : in out Input_Buffer;
          Packet : out SDPCM.Packet;
          To     : out Natural)
       is
@@ -551,10 +566,32 @@ package body CYW4343X.Generic_IO is
                  (HAL.UInt8_Array
                    (Input
                      (Packet.Offset .. Packet.Offset + Event_Length - 1)));
-               pragma Assert (Event.Eventh.Ver /= 123);
+
+               On_Event (State, Event);
             end if;
          end if;
       end Event_Poll;
+
+      procedure On_Event
+        (State : in out Joining_State;
+         Event : Event_Record)
+      is
+         WLC_E_LINK         : constant := 16#10_00_00_00#;  --  SWAP32 (16)
+         WLC_E_PSK_SUP      : constant := 16#2e_00_00_00#;  --  SWAP32 (46)
+         WLC_E_DISASSOC_IND : constant := 16#0c_00_00_00#;  --  SWAP32 (12)
+      begin
+         if Event.Eventh.Event_Type = WLC_E_LINK
+           and Event.Eventh.Status = 0
+         then
+            State.Link_Up := (Event.Eventh.Flags and 16#01_00#) /= 0;
+         elsif Event.Eventh.Event_Type = WLC_E_PSK_SUP then
+            State.Link_Auth := Event.Eventh.Status = 16#06_00_00_00#;
+         elsif Event.Eventh.Event_Type = WLC_E_DISASSOC_IND then
+            State.Link_Up := False;
+            State.Link_Auth := False;
+            State.Link_Fail := True;
+         end if;
+      end On_Event;
 
    end SDPCM;
 
@@ -671,7 +708,8 @@ package body CYW4343X.Generic_IO is
       ---------
 
       procedure Get
-        (Command : IOCTL.Command := 262;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command := 262;
          Name    : HAL.UInt8_Array;
          Data    : out HAL.UInt8_Array)
       is
@@ -728,7 +766,7 @@ package body CYW4343X.Generic_IO is
                Got  : SDPCM.Packet;
                To   : Natural;
             begin
-               SDPCM.Event_Poll (Input, Got, To);
+               SDPCM.Event_Poll (State, Input, Got, To);
 
                if To = 0 then
                   RP.Device.Timer.Delay_Milliseconds (1);
@@ -756,7 +794,8 @@ package body CYW4343X.Generic_IO is
       ---------
 
       procedure Set
-        (Command : IOCTL.Command;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command;
          Name    : HAL.UInt8_Array;
          Data    : HAL.UInt8_Array)
       is
@@ -821,7 +860,7 @@ package body CYW4343X.Generic_IO is
                Got : SDPCM.Packet;
                To  : Natural;
             begin
-               SDPCM.Event_Poll (Input, Got, To);
+               SDPCM.Event_Poll (State, Input, Got, To);
 
                if To = 0 then
                   RP.Device.Timer.Delay_Milliseconds (1);
@@ -837,14 +876,15 @@ package body CYW4343X.Generic_IO is
       ---------
 
       procedure Set
-        (Command : IOCTL.Command;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command;
          Name    : String;
          Data    : HAL.UInt8_Array)
       is
          Raw_Name : HAL.UInt8_Array (1 .. Name'Length + 1);
       begin
          if Name = "" then
-            Set (Command, Raw_Name (1 .. 0), Data);
+            Set (State, Command, Raw_Name (1 .. 0), Data);
          else
             for J in Name'Range loop
                Raw_Name (J) := Character'Pos (Name (J));
@@ -852,7 +892,7 @@ package body CYW4343X.Generic_IO is
 
             Raw_Name (Raw_Name'Last) := 0;
 
-            Set (Command, Raw_Name, Data);
+            Set (State, Command, Raw_Name, Data);
          end if;
       end Set;
 
@@ -861,7 +901,8 @@ package body CYW4343X.Generic_IO is
       ---------
 
       procedure Set
-        (Command : IOCTL.Command;
+        (State   : in out Joining_State;
+         Command : IOCTL.Command;
          Name    : String;
          Data    : Interfaces.Unsigned_32)
       is
@@ -872,7 +913,7 @@ package body CYW4343X.Generic_IO is
 
          Raw : constant Word := To_Bytes (Data);
       begin
-         Set (Command, Name, Raw);
+         Set (State, Command, Name, Raw);
       end Set;
 
    end IOCTL;
@@ -885,12 +926,32 @@ package body CYW4343X.Generic_IO is
    begin
       case State.Kind is
          when Idle =>
-            State := (Kind => Joining, Expire => Timeout (10));
-            Restart_Join;
+            State :=
+              (Kind      => Joining,
+               Expire    => Timeout (10),
+               Link_Up   => False,
+               Link_Auth => False,
+               Link_Fail => False);
+
+            Restart_Join (State);
          when Joining =>
-            null;
-         when others =>
-            raise Program_Error;
+            if State.Link_Up and State.Link_Auth then
+               State.Kind := Joined;
+            elsif State.Link_Fail or else Is_Expired (State.Expire) then
+               State.Kind := Failed;
+               State.Expire := Timeout (10);
+               Stop_Join (State);
+            end if;
+         when Joined =>
+            if State.Link_Fail then
+               State.Kind := Failed;
+               State.Expire := Timeout (10);
+               Stop_Join (State);
+            end if;
+         when Failed =>
+            if Is_Expired (State.Expire) then
+               State.Kind := Idle;
+            end if;
       end case;
    end Change_State;
 
@@ -898,7 +959,10 @@ package body CYW4343X.Generic_IO is
    -- CLM_Load --
    --------------
 
-   procedure CLM_Load (Data : HAL.UInt8_Array) is
+   procedure CLM_Load
+     (State : in out Joining_State;
+      Data  : HAL.UInt8_Array)
+   is
       MAX_LOAD_LEN : constant := 512;
 
       type CLM_Load_Request is record
@@ -945,7 +1009,8 @@ package body CYW4343X.Generic_IO is
             Request.Flag := Interfaces.Unsigned_16 (Flag);
 
             IOCTL.Set
-              (Command => IOCTL.WLC_SET_VAR,
+              (State   => State,
+               Command => IOCTL.WLC_SET_VAR,
                Name    => Raw_Name,
                Data    => Data (From .. From + N - 1));
 
@@ -962,7 +1027,7 @@ package body CYW4343X.Generic_IO is
       Ignore  : SDPCM.Packet;
       To      : Natural;
    begin
-      SDPCM.Event_Poll (Input, Ignore, To);
+      SDPCM.Event_Poll (State, Input, Ignore, To);
       Change_State (State);
    end Event_Poll;
 
@@ -995,9 +1060,11 @@ package body CYW4343X.Generic_IO is
    ----------------
 
    procedure Initialize
-     (Firmware : HAL.UInt8_Array;
+     (State    : in out Joining_State;
+      Firmware : HAL.UInt8_Array;
       NVRAM    : HAL.UInt8_Array;
       CLM      : HAL.UInt8_Array;
+      My_MAC   : out Ether_Addr;
       Success  : out Boolean)
    is
       use type Executor.Step_Array;
@@ -1099,11 +1166,10 @@ package body CYW4343X.Generic_IO is
          Custom_Value => Make_Tag (NVRAM'Length / 4));
 
       if Success then
-         CLM_Load (CLM);
+         CLM_Load (State, CLM);
       end if;
 
       declare
-         BAK_GPIOOUT_REG   : constant := 16#8064#;
          BAK_GPIOOUTEN_REG : constant := 16#8068#;
       begin
          Write_Register
@@ -1118,56 +1184,58 @@ package body CYW4343X.Generic_IO is
             Value        => 1,
             Length       => 4);
 
-         Write_Register
-           (Bus_Function => CYW4343X.Backplane,
-            Address      => BAK_GPIOOUT_REG,
-            Value        => 1,
-            Length       => 4);
+         Turn_LED (False);
       end;
 
       declare
-         MAC  : HAL.UInt8_Array (1 .. 6);
          Name : constant String := "cur_etheraddr" & Character'Val (0);
          Raw  : HAL.UInt8_Array (Name'Range)
            with Import, Address => Name'Address;
       begin
-         IOCTL.Get (Name => Raw, Data => MAC);
+         IOCTL.Get (State, Name => Raw, Data => My_MAC);
       end;
 
       Success := True;
    end Initialize;
 
-   procedure Restart_Join is
+   procedure Restart_Join (State : in out Joining_State) is
       Mode : constant CYW4343X.Security_Mode := Security_Mode;
    begin
-      IOCTL.Set (IOCTL.WLC_UP, "", []);
-      IOCTL.Set (IOCTL.WLC_SET_GMODE, "", 1);
-      IOCTL.Set (IOCTL.WLC_SET_BAND, "", 0);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "pm2_sleep_ret", 16#C8#);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "bcn_li_bcn", 1);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "bcn_li_dtim", 1);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "assoc_listen", 16#0A#);
-      IOCTL.Set (IOCTL.WLC_SET_INFRA, "", 1);
-      IOCTL.Set (IOCTL.WLC_SET_AUTH, "", 0);
+      IOCTL.Set (State, IOCTL.WLC_UP, "", []);
+      IOCTL.Set (State, IOCTL.WLC_SET_GMODE, "", 1);
+      IOCTL.Set (State, IOCTL.WLC_SET_BAND, "", 0);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "pm2_sleep_ret", 16#C8#);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "bcn_li_bcn", 1);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "bcn_li_dtim", 1);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "assoc_listen", 16#0A#);
+      IOCTL.Set (State, IOCTL.WLC_SET_INFRA, "", 1);
+      IOCTL.Set (State, IOCTL.WLC_SET_AUTH, "", 0);
 
       case Mode is
          when WPA_TKIP | WPA2_AES =>
             IOCTL.Set
-              (IOCTL.WLC_SET_WSEC, "", (if Mode = WPA2_AES then 6 else 2));
+              (State,
+               IOCTL.WLC_SET_WSEC,
+               "",
+               (if Mode = WPA2_AES then 6 else 2));
 
             IOCTL.Set
-              (IOCTL.WLC_SET_VAR, "bsscfg:sup_wpa",
+              (State,
+               IOCTL.WLC_SET_VAR,
+               "bsscfg:sup_wpa",
                [16#00#, 16#00#, 16#00#, 16#00#,
                 16#01#, 16#00#, 16#00#, 16#00#]);
 
             IOCTL.Set
-              (IOCTL.WLC_SET_VAR,
+              (State,
+               IOCTL.WLC_SET_VAR,
                "bsscfg:sup_wpa2_eapver",
                [16#00#, 16#00#, 16#00#, 16#00#,
                 16#FF#, 16#FF#, 16#FF#, 16#FF#]);
 
             IOCTL.Set
-              (IOCTL.WLC_SET_VAR,
+              (State,
+               IOCTL.WLC_SET_VAR,
                "bsscfg:sup_wpa_tmo",
                [16#00#, 16#00#, 16#00#, 16#00#,
                 16#C4#, 16#09#, 16#00#, 16#00#]);
@@ -1186,14 +1254,15 @@ package body CYW4343X.Generic_IO is
                for J in Value'Range loop
                   Raw (4 + J) := Character'Pos (Value (J));
                end loop;
-               IOCTL.Set (IOCTL.WLC_SET_WSEC_PMK, "", Raw);
+               IOCTL.Set (State, IOCTL.WLC_SET_WSEC_PMK, "", Raw);
             end;
 
-            IOCTL.Set (IOCTL.WLC_SET_INFRA, "", 1);
-            IOCTL.Set (IOCTL.WLC_SET_AUTH, "", 0);
+            IOCTL.Set (State, IOCTL.WLC_SET_INFRA, "", 1);
+            IOCTL.Set (State, IOCTL.WLC_SET_AUTH, "", 0);
 
             IOCTL.Set
-              (IOCTL.WLC_SET_WPA_AUTH,
+              (State,
+               IOCTL.WLC_SET_WPA_AUTH,
                "",
                (if Mode = WPA2_AES then 16#80# else 4));
 
@@ -1209,7 +1278,7 @@ package body CYW4343X.Generic_IO is
                for J in Value'Range loop
                   Raw (4 + J) := Character'Pos (Value (J));
                end loop;
-               IOCTL.Set (IOCTL.WLC_SET_SSID, "", Raw);
+               IOCTL.Set (State, IOCTL.WLC_SET_SSID, "", Raw);
             end;
 
          when None =>
@@ -1222,7 +1291,8 @@ package body CYW4343X.Generic_IO is
    ----------------
 
    procedure Start_Join
-     (Success : out Boolean;
+     (State   : in out Joining_State;
+      Success : out Boolean;
       Country : Generic_IO.Country := XX_Country) is
    begin
       Success := True;
@@ -1235,20 +1305,22 @@ package body CYW4343X.Generic_IO is
          Custom_Value => 0);
 
       --  Set country
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "country", HAL.UInt8_Array (Country));
+      IOCTL.Set
+        (State, IOCTL.WLC_SET_VAR, "country", HAL.UInt8_Array (Country));
       --  Select antenna
-      IOCTL.Set (IOCTL.WLC_SET_ANTDIV, "", [0, 0, 0, 0]);
+      IOCTL.Set (State, IOCTL.WLC_SET_ANTDIV, "", [0, 0, 0, 0]);
       --  Data aggregation
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "bus:txglom", 0);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "apsta", 1);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "ampdu_ba_wsize", 8);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "ampdu_mpdu", 4);
-      IOCTL.Set (IOCTL.WLC_SET_VAR, "ampdu_rx_factor", 0);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "bus:txglom", 0);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "apsta", 1);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "ampdu_ba_wsize", 8);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "ampdu_mpdu", 4);
+      IOCTL.Set (State, IOCTL.WLC_SET_VAR, "ampdu_rx_factor", 0);
       RP.Device.Timer.Delay_Milliseconds (150);
 
       --  Enable events for reporting the join process
       IOCTL.Set
-        (IOCTL.WLC_SET_VAR,
+        (State,
+         IOCTL.WLC_SET_VAR,
          "bsscfg:event_msgs",
          Events.To_Raw_Event_Mask (Events.To_Mask (Events.Join_Events)));
 
@@ -1261,11 +1333,34 @@ package body CYW4343X.Generic_IO is
             16#01#, 16#00#, 16#5E#, 16#00#, 16#00#, 16#FB#,
             others => 0];
       begin
-         IOCTL.Set (IOCTL.WLC_SET_VAR, "mcast_list", List);
+         IOCTL.Set (State, IOCTL.WLC_SET_VAR, "mcast_list", List);
 
          RP.Device.Timer.Delay_Milliseconds (50);
       end;
    end Start_Join;
+
+   ---------------
+   -- Stop_Join --
+   ---------------
+
+   procedure Stop_Join (State : in out Joining_State) is
+   begin
+      IOCTL.Set (State, IOCTL.WLC_DOWN, "", []);
+   end Stop_Join;
+
+   --------------
+   -- Turn_LED --
+   --------------
+
+   procedure Turn_LED (Value : Boolean) is
+      BAK_GPIOOUT_REG   : constant := 16#8064#;
+   begin
+      Write_Register
+        (Bus_Function => CYW4343X.Backplane,
+         Address      => BAK_GPIOOUT_REG,
+         Value        => (if Value then 1 else 0),
+         Length       => 4);
+   end Turn_LED;
 
    ---------------------
    -- Upload_Firmware --
