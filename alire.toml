@@ -15,10 +15,24 @@ executables = ["picowi"]
 development.optimization = ["-O0"]
 development.style_checks = ["-gnaty", "-gnaty-B"]
 
+[[actions]]
+type = "pre-build"
+command = [
+ "rm", "-rfv",
+ "alire/cache/pins/rp2040_hal/src/drivers/rp-rom-floating_point.ads",
+ "alire/cache/pins/rp2040_hal/src/drivers/rp-rom-floating_point.adb"]
+
 [[depends-on]]
 rp2040_hal = "^2.5.0"
 pico_bsp = "^2.2.0"
+light_tasking_rp2040 = "^15.1.0"
+enet = "^1.1.2"
 
 [[pins]]
 rp2040_hal = { url='https://github.com/JeremyGrosser/rp2040_hal' }
 
+[configuration.values]
+light_tasking_rp2040.Max_CPUs = 1
+enet.Default_Random = "null"
+rp2040_hal.Use_Startup = false
+rp2040_hal.Interrupts = "bb_runtimes"

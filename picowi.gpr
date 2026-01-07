@@ -6,10 +6,11 @@
 with "config/picowi_config.gpr";
 
 with "pico_bsp.gpr";
+with "runtime_build.gpr";
 
 project Picowi is
    for Target use "arm-eabi";
-   for Runtime ("Ada") use "light-cortex-m0p";
+   for Runtime ("Ada") use runtime_build'Runtime ("Ada");
 
    for Source_Dirs use ("src/", "config/");
    for Object_Dir use "obj/" & Picowi_Config.Build_Profile;
@@ -30,7 +31,10 @@ project Picowi is
    end Install;
 
    package Linker is
-      for Switches ("Ada") use Pico_BSP.Linker_Switches;
+      for Switches ("Ada") use Runtime_Build.Linker_Switches &
+        ("-Wl,--gc-sections",
+         "-Wl,-Map=map.txt",
+         "-Wl,--defsym=__stack_size=0x2000");
    end Linker;
 
    package Ide is
