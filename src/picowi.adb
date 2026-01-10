@@ -7,52 +7,52 @@
 
 pragma Ada_2022;
 
+with Net.Interfaces.SDPCM;
 with RP.Device;
 with RP.Clock;
-with RP.Timer;
 with Pico;
 
 with CYW4343X.Firmware_43439;
-with CYW4343X.Generic_IO;
-with CYW4343X.Generic_SPI;
 with CYW4343X.RP_WiFi;
+
+with Net.Buffers;
+with Net.Protos.Dispatchers;
+with Net.Protos.Arp;
+with Net.Protos.Icmp;
+with Net.Protos.IPv4;
+
+with Network;
 
 procedure Picowi is
 
-   function SSID     return String is ("guest");
-   function Password return String is ("guest123");
-
-   use type RP.Timer.Time;
-
-   function Timeout (Second : Natural) return RP.Timer.Time is
-     (RP.Timer.Milliseconds (Second * 1000) + RP.Timer.Clock);
-
-   function Is_Expired (Timeout : RP.Timer.Time) return Boolean is
-     (Timeout < RP.Timer.Clock);
-
-   package CYW4343X_SPI is new CYW4343X.Generic_SPI
-     (Chip_Select => CYW4343X.RP_WiFi.Chip_Select,
-      Read        => CYW4343X.RP_WiFi.Read_SPI,
-      Write       => CYW4343X.RP_WiFi.Write_SPI);
-
-   package CYW4343X_IO is new CYW4343X.Generic_IO
-     (Read_Register           => CYW4343X_SPI.Read_Register,
-      Write_Register          => CYW4343X_SPI.Write_Register,
-      Read                    => CYW4343X_SPI.Read,
-      Write_Prefix_Length     => CYW4343X_SPI.Output_Prefix'Length,
-      Write_Prefix            => CYW4343X_SPI.Write_Prefix,
-      Write                   => CYW4343X_SPI.Write,
-      Has_Event               => CYW4343X_SPI.Has_Event,
-      Clear_Error             => CYW4343X_SPI.Clear_Error,
-      Available_Packet_Length => CYW4343X_SPI.Available_Packet_Length,
-      SSID                    => SSID,
-      Password                => Password,
-      Security_Mode           => CYW4343X.WPA2_AES,
-      Time                    => RP.Timer.Time,
-      Timeout                 => Timeout,
-      Is_Expired              => Is_Expired);
+   package CYW4343X_SPI renames Net.Interfaces.SDPCM.CYW4343X_SPI;
+   package CYW4343X_IO renames Net.Interfaces.SDPCM.CYW4343X_IO;
 
    State : CYW4343X_IO.Joining_State;
+   Seq   : Net.Uint16 := 0;
+
+   procedure Send_Ping (Host : Net.Ip_Addr; Seq : in out Net.Uint16);
+
+   procedure Send_Ping (Host : Net.Ip_Addr; Seq : in out Net.Uint16) is
+      Packet : Net.Buffers.Buffer_Type;
+      Status : Net.Error_Code;
+   begin
+
+      Net.Buffers.Allocate (Packet);
+
+      if not Packet.Is_Null then
+         Packet.Set_Length (64);
+         Net.Protos.Icmp.Echo_Request
+           (Ifnet     => Network.LAN.all,
+            Target_Ip => Host,
+            Packet    => Packet,
+            Seq       => Seq,
+            Ident     => 1234,
+            Status    => Status);
+
+         Seq := Net.Uint16'Succ (Seq);
+      end if;
+   end Send_Ping;
 
 begin
    RP.Clock.Initialize (Pico.XOSC_Frequency);
@@ -100,6 +100,26 @@ begin
 
       if CYW4343X_IO.Is_Joined (State) then
          CYW4343X_IO.Turn_LED (True);
+         exit;
       end if;
+   end loop;
+
+   Network.Initialize;
+
+   declare
+      Ignore : Net.Protos.Receive_Handler;
+   begin
+      Net.Protos.Dispatchers.Set_Handler
+        (Proto    => Net.Protos.IPv4.P_ICMP,
+         Handler  => Network.ICMP_Handler'Access,
+         Previous => Ignore);
+   end;
+
+   loop
+      Net.Protos.Arp.Timeout (Network.LAN.all);
+
+      Send_Ping (Network.LAN.Gateway, Seq);
+
+      RP.Device.Timer.Delay_Milliseconds (1000);
    end loop;
 end Picowi;

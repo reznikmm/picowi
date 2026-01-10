@@ -424,6 +424,7 @@ package body CYW4343X.Generic_IO is
         (Input  : Input_Buffer;
          Result : out Packet);
 
+      TX_Sequence : Interfaces.Unsigned_8 := 0;
    end SDPCM;
 
    package body SDPCM is
@@ -700,7 +701,7 @@ package body CYW4343X.Generic_IO is
         with Pack;
 
       TX_Command  : Output_IOCTL_Command;
-      TX_Sequence : Interfaces.Unsigned_8 := 0;
+      TX_Sequence : Interfaces.Unsigned_8 renames SDPCM.TX_Sequence;
       TX_Request  : Interfaces.Unsigned_16 := 0;
 
       ---------
@@ -1285,6 +1286,70 @@ package body CYW4343X.Generic_IO is
             raise Program_Error;
       end case;
    end Restart_Join;
+
+   type Output_Data is record
+      Prefix : HAL.UInt8_Array (1 .. Write_Prefix_Length);
+      SDPCM  : Generic_IO.SDPCM.SDPCM_Header;
+      Pad    : Interfaces.Unsigned_16;
+      BDC    : Generic_IO.SDPCM.BDC_Header;
+      Data   : HAL.UInt8_Array (1 .. 1600);
+   end record
+     with Pack;
+
+   --  for Output_Data use record
+   --     Prefix at 0 range 0 .. Write_Prefix_Length * 8 - 1;
+   --     SDPCM at 0 range 0 .. 12 * 8 - 1;
+   --     Pad   at 12 range 0 .. 15;
+   --     BDC   at 14 range 0 .. 31;
+   --     Data  at 18 range 0 .. 1600 * 8 - 1;
+   --  end record;
+
+   TX_Data : Output_Data;
+
+   ----------
+   -- Send --
+   ----------
+
+   procedure Send (Data : HAL.UInt8_Array) is
+      Length     : constant Interfaces.Unsigned_16 :=
+        Interfaces.Unsigned_16 (Write_Prefix_Length) +
+        2 +
+          (SDPCM.SDPCM_Header'Size + SDPCM.BDC_Header'Size) / 8 +
+        Data'Length;
+
+      Raw : HAL.UInt8_Array (1 .. Positive (Length))
+        with Import, Address => TX_Data'Address;
+
+      TX_Sequence : Interfaces.Unsigned_8 renames SDPCM.TX_Sequence;
+   begin
+      TX_Sequence := Interfaces.Unsigned_8'Succ (TX_Sequence);
+
+      TX_Data :=
+        (Prefix => Write_Prefix
+           (Bus_Function => CYW4343X.WLAN,
+            Address      => 0,
+            Length       => Positive (Length) - Write_Prefix_Length),
+         SDPCM  =>
+           (Tag      => Make_Tag
+                (Length - Interfaces.Unsigned_16 (Write_Prefix_Length)),
+            Sequence => TX_Sequence,
+            Channel  => SDPCM.Data,
+            Next_Len => 0,
+            Hdr_Len  => SDPCM.SDPCM_Header'Size / 8 + 2,
+            Flow     => 0,
+            Credit   => 0,
+            Reserved => 0),
+         Pad => 0,
+         BDC  => (16#20#, 0, 0, 0),
+         Data   => <>);
+
+      TX_Data.Data (1 .. Data'Length) := Data;
+
+      Write
+        (Bus_Function => CYW4343X.WLAN,
+         Address      => 0,
+         Value        => Raw);
+   end Send;
 
    ----------------
    -- Join_Start --

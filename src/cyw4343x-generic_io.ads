@@ -83,6 +83,8 @@ package CYW4343X.Generic_IO is
 
    procedure Turn_LED (Value : Boolean);
 
+   procedure Send (Data : HAL.UInt8_Array);
+
 private
    type Country is new HAL.UInt8_Array (1 .. 20);
 
