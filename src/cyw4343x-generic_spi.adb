@@ -69,6 +69,27 @@ package body CYW4343X.Generic_SPI is
          else Interfaces.Shift_Right (Value, LEN_SHIFT) and LEN_MASK);
    end Available_Packet_Length;
 
+   ----------------------
+   -- Is_Ready_To_Send --
+   ----------------------
+
+   function Is_Ready_To_Send return Boolean is
+      use type Interfaces.Unsigned_32;
+
+      Value : Interfaces.Unsigned_32;
+
+      F2_RX_READY : constant := 16#20#;
+
+   begin
+      Read_Register
+        (Bus_Function => CYW4343X.Bus,
+         Address      => SPI_Register.Status,
+         Length       => 4,
+         Value        => Value);
+
+      return (Value and F2_RX_READY) /= 0;
+   end Is_Ready_To_Send;
+
    -----------------
    -- Clear_Error --
    -----------------

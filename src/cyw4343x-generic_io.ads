@@ -40,6 +40,7 @@ generic
    with function Has_Event return Boolean;
 
    with function Available_Packet_Length return Interfaces.Unsigned_32;
+   with function Is_Ready_To_Send return Boolean;
 
    with procedure Clear_Error;
 
@@ -84,6 +85,11 @@ package CYW4343X.Generic_IO is
    procedure Turn_LED (Value : Boolean);
 
    procedure Send (Data : HAL.UInt8_Array);
+
+   procedure Receive
+     (State : in out Joining_State;
+      Data  : out HAL.UInt8_Array;
+      Last  : out Natural);
 
 private
    type Country is new HAL.UInt8_Array (1 .. 20);

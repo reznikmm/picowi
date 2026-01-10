@@ -52,6 +52,7 @@ package CYW4343X.Generic_SPI is
    function Has_Event return Boolean;
 
    function Available_Packet_Length return Interfaces.Unsigned_32;
+   function Is_Ready_To_Send return Boolean;
 
    procedure Clear_Error;
 

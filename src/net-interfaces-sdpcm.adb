@@ -28,9 +28,24 @@ package body Net.Interfaces.SDPCM is
       return not Uint16 (Sum);
    end Get_Ip_Sum;
 
+   -------------
+   -- Receive --
+   -------------
+
    procedure Receive
      (Self   : in out SDPCM_Ifnet;
-      Packet : in out Net.Buffers.Buffer_Type) is null;
+      Packet : in out Net.Buffers.Buffer_Type)
+   is
+      Addr  : constant System.Address := Packet.Get_Data_Address;
+      Size  : constant Natural := Net.Buffers.Data_Type'Length;
+
+      Raw   : HAL.UInt8_Array (1 .. Size)
+        with Import, Address => Addr;
+      Last : Natural;
+   begin
+      CYW4343X_IO.Receive (Self.State, Raw, Last);
+      Packet.Set_Length (Uint16 (Last));
+   end Receive;
 
    ----------
    -- Send --
@@ -40,6 +55,8 @@ package body Net.Interfaces.SDPCM is
      (Self   : in out SDPCM_Ifnet;
       Packet : in out Net.Buffers.Buffer_Type)
    is
+      pragma Unreferenced (Self);
+
       Addr   : constant System.Address := Packet.Get_Data_Address;
       Ether  : Net.Headers.Ether_Header renames Packet.Ethernet.all;
       Ip     : Net.Headers.IP_Header renames Packet.IP.all;
@@ -74,6 +91,7 @@ package body Net.Interfaces.SDPCM is
          end case;
       end if;
 
+      --  TBD: Wait SPI_STATUS_F2_RX_READY
       declare
          Raw : HAL.UInt8_Array (1 .. Size)
            with Import, Address => Addr;

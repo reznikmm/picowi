@@ -33,6 +33,7 @@ package Net.Interfaces.SDPCM is
       Has_Event               => CYW4343X_SPI.Has_Event,
       Clear_Error             => CYW4343X_SPI.Clear_Error,
       Available_Packet_Length => CYW4343X_SPI.Available_Packet_Length,
+      Is_Ready_To_Send        => CYW4343X_SPI.Is_Ready_To_Send,
       SSID                    => SSID,
       Password                => Password,
       Security_Mode           => CYW4343X.WPA2_AES,
@@ -40,17 +41,17 @@ package Net.Interfaces.SDPCM is
       Timeout                 => Timeout,
       Is_Expired              => Is_Expired);
 
-   type SDPCM_Ifnet is new Ifnet_Type with private;
+   type SDPCM_Ifnet is new Ifnet_Type with record
+      State : CYW4343X_IO.Joining_State;
+   end record;
 
    procedure Create (Self : in out SDPCM_Ifnet'Class);
-
-private
-
-   type SDPCM_Ifnet is new Ifnet_Type with null record;
 
    procedure Send
      (Self   : in out SDPCM_Ifnet;
       Packet : in out Net.Buffers.Buffer_Type);
+   --  How to synchronize with Generic_Receiver task???
+   --  How to handle data during restart join???
 
    procedure Receive
      (Self   : in out SDPCM_Ifnet;

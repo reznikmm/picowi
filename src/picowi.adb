@@ -28,7 +28,7 @@ procedure Picowi is
    package CYW4343X_SPI renames Net.Interfaces.SDPCM.CYW4343X_SPI;
    package CYW4343X_IO renames Net.Interfaces.SDPCM.CYW4343X_IO;
 
-   State : CYW4343X_IO.Joining_State;
+   State : CYW4343X_IO.Joining_State renames Network.MAC.State;
    Seq   : Net.Uint16 := 0;
 
    procedure Send_Ping (Host : Net.Ip_Addr; Seq : in out Net.Uint16);

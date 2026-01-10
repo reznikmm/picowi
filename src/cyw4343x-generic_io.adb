@@ -1032,6 +1032,39 @@ package body CYW4343X.Generic_IO is
       Change_State (State);
    end Event_Poll;
 
+   -------------
+   -- Receive --
+   -------------
+
+   procedure Receive
+     (State : in out Joining_State;
+      Data  : out HAL.UInt8_Array;
+      Last  : out Natural)
+   is
+      Packet  : SDPCM.Packet;
+      To      : Natural;
+   begin
+      loop
+         SDPCM.Event_Poll (State, Input, Packet, To);
+         Change_State (State);
+
+         case Packet.Channel is
+            when SDPCM.Data =>
+               Last := To - Packet.Offset + 1;
+               Data (1 .. Last) :=
+                 HAL.UInt8_Array (Input (Packet.Offset .. To));
+
+               exit;
+
+            when SDPCM.Event | SDPCM.Control =>
+               null;
+
+            when others =>
+               delay 0.005;
+         end case;
+      end loop;
+   end Receive;
+
    ------------------
    -- Get_Response --
    ------------------
@@ -1317,7 +1350,9 @@ package body CYW4343X.Generic_IO is
           (SDPCM.SDPCM_Header'Size + SDPCM.BDC_Header'Size) / 8 +
         Data'Length;
 
-      Raw : HAL.UInt8_Array (1 .. Positive (Length))
+      Rounded : constant Interfaces.Unsigned_16 := (Length + 3) / 4 * 4;
+
+      Raw : HAL.UInt8_Array (1 .. Positive (Rounded))
         with Import, Address => TX_Data'Address;
 
       TX_Sequence : Interfaces.Unsigned_8 renames SDPCM.TX_Sequence;
@@ -1344,6 +1379,13 @@ package body CYW4343X.Generic_IO is
          Data   => <>);
 
       TX_Data.Data (1 .. Data'Length) := Data;
+
+      for J in 1 .. 100 loop
+         exit when Is_Ready_To_Send;
+         RP.Device.Timer.Delay_Milliseconds (5);
+
+         pragma Assert (J /= 100);
+      end loop;
 
       Write
         (Bus_Function => CYW4343X.WLAN,
